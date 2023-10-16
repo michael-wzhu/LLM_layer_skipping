@@ -50,13 +50,10 @@ from transformers.utils.versions import require_version
 
 sys.path.append("./")
 
+from src.gpt2.configuration_gpt2 import GPT2Config
 from src.gpt2.modeling_gpt2 import GPT2LMHeadModel
 
 os.environ["WANDB_MODE"] = "disabled"
-
-
-# MODEL_CONFIG_CLASSES = list(MODEL_FOR_CAUSAL_LM_MAPPING.keys())
-# MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 
 
 @dataclass
@@ -81,10 +78,7 @@ class ModelArguments:
             )
         },
     )
-    model_type: Optional[str] = field(
-        default=None,
-        metadata={"help": "If training from scratch, pass a model type from the list: " + ", ".join(MODEL_TYPES)},
-    )
+
     config_overrides: Optional[str] = field(
         default=None,
         metadata={
@@ -216,10 +210,10 @@ class MyTrainingArguments(TrainingArguments):
     num_train_epochs : Optional[int] = field(default=2)
 
     lora_rank : Optional[int] = field(default=8)
-    lora_dropout : Optional[float] = field(default=0.1)
+    lora_dropout : Optional[float] = field(default=0.2)
     lora_alpha : Optional[float] = field(default=32.)
     adapter_rank: Optional[int] = field(default=8)
-    adapter_dropout: Optional[float] = field(default=0.1)
+    adapter_dropout: Optional[float] = field(default=0.2)
 
     modules_to_save : Optional[str] = field(default='embed_tokens,lm_head')
     debug_mode : Optional[bool] = field(default=False)
@@ -229,9 +223,13 @@ class MyTrainingArguments(TrainingArguments):
     predict_with_generate : Optional[bool] = field(default=False)
     do_generation : Optional[bool] = field(default=False)
 
-    # do_search: Optional[bool] = field(default=False)
+    do_train: Optional[bool] = field(default=True)
+    use_consistency_loss: Optional[bool] = field(default=False)
+    eval_steps: Optional[int] = field(default=100)
+    learning_rate: Optional[float] = field(default=5e-5)
+
     # search_space : Optional[str] = field(default="micro")
-    # use_consistency_loss : Optional[bool] = field(default=False)
+    #
     #
     # # training_args.start_search_steps and completed_steps % training_args.search_every == 0 and completed_steps <= training_args.end_search_steps
     # start_search_steps: Optional[int] = field(default=500)
@@ -242,12 +240,13 @@ class MyTrainingArguments(TrainingArguments):
 logger = logging.getLogger(__name__)
 
 
-def eval_model(model, eval_dataloader):
+def eval_model(model, eval_dataloader, layer_gates=None):
     model.eval()
     losses = []
     total_loss = 0.0
     num_batches = 0
     for step, batch in tqdm(enumerate(eval_dataloader)):
+        batch["layer_gates"] = layer_gates
         with torch.no_grad():
             outputs = model(**batch)
 
@@ -325,9 +324,11 @@ def main():
         "revision": model_args.model_revision,
         "use_auth_token": True if model_args.use_auth_token else None,
     }
-    config = FalconConfig.from_pretrained(model_args.model_name_or_path, **config_kwargs)
+    config = GPT2Config.from_pretrained(model_args.model_name_or_path, **config_kwargs)
     config.lora_rank = training_args.lora_rank
     config.lora_dropout = training_args.lora_dropout
+    config.adapter_rank = training_args.adapter_rank
+    config.adapter_dropout = training_args.adapter_dropout
 
     tokenizer_kwargs = {
         "cache_dir": model_args.cache_dir,
@@ -336,7 +337,7 @@ def main():
         "use_auth_token": True if model_args.use_auth_token else None,
     }
     tokenizer = AutoTokenizer.from_pretrained(
-        model_args.tokenizer_name_or_path, **tokenizer_kwargs
+        model_args.model_name_or_path, **tokenizer_kwargs
     )
     tokenizer.pad_token = tokenizer.eos_token
 
@@ -349,10 +350,14 @@ def main():
 
         max_seq_length = 1024
 
-        input = example["input"]
+        input = example.get("input")
+        if not input:
+            input = example.get("instruction")
         input = f"{input}”\n"
         instructions = input
-        target = example["target"]
+        target = example.get("target")
+        if not target:
+            target = example.get("response")
 
         eos_token_ids = tokenizer("<|endoftext|>", return_tensors="pt")["input_ids"].cpu().numpy().tolist()[0]
 
@@ -369,10 +374,10 @@ def main():
         labels = labels[- max_seq_length: ]
         attention_mask = attention_mask[- max_seq_length: ]
 
-        if random.uniform(0, 1) < 0.01:
-            print("input_ids: ", len(input_ids))
-            print("labels: ", len(labels))
-            print("attention_mask: ", len(attention_mask))
+        # if random.uniform(0, 1) < 0.01:
+        #     print("input_ids: ", len(input_ids))
+        #     print("labels: ", len(labels))
+        #     print("attention_mask: ", len(attention_mask))
 
         assert len(input_ids) == len(labels) == len(attention_mask)
         return {
@@ -383,7 +388,9 @@ def main():
 
     def tokenize_function_eval(example):
 
-        input = example["input"]
+        input = example.get("input")
+        if not input:
+            input = example.get("instruction")
 
         eos_token_id = 50256
 
@@ -512,12 +519,12 @@ def main():
     optimizer_grouped_parameters = [
         {
             "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)
-                       and (("lm_head_lora" in n) or ("_adapt_" in n) ) ],
+                       and (("lora" in n) or ("adapter" in n) ) ],
             "weight_decay": training_args.weight_decay,
         },
         {
             "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)
-                       and (("lm_head_lora" in n) or ("_adapt_" in n) )],
+                       and (("lora" in n) or ("adapter" in n) )],
             "weight_decay": 0.0,
         },
     ]
@@ -607,6 +614,25 @@ def main():
             total_loss = 0
             active_dataloader = train_dataloader
             for step, batch in enumerate(active_dataloader):
+
+                if completed_steps < 500:
+                    layer_dropping_rate = 0.0
+                elif completed_steps < 1000:
+                    layer_dropping_rate = 0.1
+                elif completed_steps < 1500:
+                    layer_dropping_rate = 0.2
+                elif completed_steps < 2500:
+                    layer_dropping_rate = 0.3
+                elif completed_steps < 3500:
+                    layer_dropping_rate = 0.4
+                else:
+                    layer_dropping_rate = 0.5
+
+                batch["layer_gates"] = np.random.binomial(
+                    1,
+                    1 - layer_dropping_rate,
+                    config.num_hidden_layers,
+                ).tolist()
                 model.train()
                 with accelerator.accumulate(model):
 
@@ -631,7 +657,11 @@ def main():
                     completed_steps += 1
 
                     if completed_steps % training_args.eval_steps == 0 and completed_steps > 0:
-                        eval_loss = eval_model(model, eval_dataloader)
+                        eval_loss = eval_model(
+                            model,
+                            eval_dataloader,
+                            layer_gates=[1] * config.num_hidden_layers
+                        )
                         logger.info(f"completed_steps: {completed_steps}; eval loss: {eval_loss}")
                         if eval_loss < best_loss:
                             best_loss = eval_loss
@@ -705,3 +735,14 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+    '''
+    # debug
+    python src/gpt2/run_sft.py  --dataset_name datasets/alpaca/ --model_name_or_path resources/gpt2 --block_size 1024 --lora_rank 64 --adapter_rank 32 --per_device_train_batch_size 8 --gradient_accumulation_steps 8 --num_train_epochs 50 --warmup_steps 100 --output_dir experiments/gpt2_debug_0 --do_train --do_eval --eval_steps 250 --learning_rate 5e-4
+    
+    python src/gpt2/run_sft.py  --dataset_name datasets/sst-2/ --model_name_or_path resources/gpt2 --block_size 1024 --lora_rank 64 --adapter_rank 32 --per_device_train_batch_size 8 --gradient_accumulation_steps 8 --num_train_epochs 10 --warmup_steps 100 --output_dir experiments/gpt2_debug_0 --do_train --do_eval --eval_steps 250 --learning_rate 5e-4
+    
+
+    
+    
+    '''

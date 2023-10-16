@@ -3,9 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 
-from src.fasterbert.modules.child_sep_conv import ChildSepConv
-from src.fasterbert.modules.multi_headed_attn import MultiHeadedAttention
-
 
 def init_weights(module):
     """Initialize the weights."""

@@ -124,6 +124,7 @@ def load_tf_weights_in_gpt2(model, config, gpt2_checkpoint_path):
 class GPT2Attention(nn.Module):
     def __init__(self, config, is_cross_attention=False, layer_idx=None):
         super().__init__()
+        self.config = config
 
         max_positions = config.max_position_embeddings
         self.register_buffer(
@@ -163,7 +164,7 @@ class GPT2Attention(nn.Module):
 
         # add lora
         self.c_attn_lora_a = nn.Linear(self.embed_dim, 3 * config.lora_rank, bias=False)
-        self.c_attn_lora_b = nn.Linear(3 * config.lora_rank, self.embed_dim, bias=False)
+        self.c_attn_lora_b = nn.Linear(3 * config.lora_rank, 3 * self.embed_dim, bias=False)
 
         self.c_proj_lora_a = nn.Linear(self.embed_dim, 1 * config.lora_rank, bias=False)
         self.c_proj_lora_b = nn.Linear(1 * config.lora_rank, self.embed_dim, bias=False)
@@ -361,6 +362,8 @@ class GPT2Attention(nn.Module):
 class GPT2MLP(nn.Module):
     def __init__(self, intermediate_size, config):
         super().__init__()
+        self.config = config
+
         embed_dim = config.hidden_size
         self.c_fc = Conv1D(intermediate_size, embed_dim)
         self.c_proj = Conv1D(embed_dim, intermediate_size)
@@ -478,7 +481,6 @@ class GPT2Block(nn.Module):
             add_residual=False
         )
         hidden_states = hidden_states * layer_gate + hidden_states_1
-
 
         if use_cache:
             outputs = (hidden_states,) + outputs
@@ -817,6 +819,7 @@ class GPT2Model(GPT2PreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+            layer_gates=None,
     ) -> Union[Tuple, BaseModelOutputWithPastAndCrossAttentions]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -828,7 +831,7 @@ class GPT2Model(GPT2PreTrainedModel):
         if input_ids is not None and inputs_embeds is not None:
             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
         elif input_ids is not None:
-            self.warn_if_padding_and_no_attention_mask(input_ids, attention_mask)
+            # self.warn_if_padding_and_no_attention_mask(input_ids, attention_mask)
             input_shape = input_ids.size()
             input_ids = input_ids.view(-1, input_shape[-1])
             batch_size = input_ids.shape[0]
@@ -935,7 +938,7 @@ class GPT2Model(GPT2PreTrainedModel):
                 def create_custom_forward(module):
                     def custom_forward(*inputs):
                         # None for past_key_value
-                        return module(*inputs, use_cache, output_attentions)
+                        return module(*inputs, use_cache, output_attentions, layer_gates[i])
 
                     return custom_forward
 
@@ -958,6 +961,7 @@ class GPT2Model(GPT2PreTrainedModel):
                     encoder_attention_mask=encoder_attention_mask,
                     use_cache=use_cache,
                     output_attentions=output_attentions,
+                    layer_gate=layer_gates[i]
                 )
 
             hidden_states = outputs[0]
@@ -1116,6 +1120,7 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+            layer_gates=None
     ) -> Union[Tuple, CausalLMOutputWithCrossAttentions]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
@@ -1139,6 +1144,7 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+            layer_gates=layer_gates
         )
         hidden_states = transformer_outputs[0]
 
