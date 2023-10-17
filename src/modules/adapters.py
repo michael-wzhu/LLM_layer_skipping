@@ -23,7 +23,7 @@ class ParallelAdapter(nn.Module):
                  dropout=0.,
                  adapter_scalar="1.0",
                  adapter_layernorm_option="in",
-                 activation_function="gelu",
+                 activation_function="relu",
                  ):
         super().__init__()
         self.n_embd = d_model
@@ -60,8 +60,8 @@ class ParallelAdapter(nn.Module):
 
     def forward(self, x, add_residual=True, residual=None, mask=None):
         residual = x if residual is None else residual
-        if self.adapter_layernorm_option == "in":
-            x = self.adapter_layer_norm_before(x)
+        # if self.adapter_layernorm_option == "in":
+        #     x = self.adapter_layer_norm_before(x)
 
         down = self.down_proj(x)
         down = self.non_linear_func(down)

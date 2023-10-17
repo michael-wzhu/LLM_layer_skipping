@@ -522,7 +522,7 @@ def main():
             "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)
                        and (("lora" in n)
                             or ("adapter" in n)
-                            ) ],
+                            )],
             "weight_decay": training_args.weight_decay,
         },
         {
@@ -622,70 +622,48 @@ def main():
             active_dataloader = train_dataloader
             for step, batch in enumerate(active_dataloader):
 
-                # layer_dropping_rate = 0.0
+                layer_dropping_rate = 0.0
 
-                if completed_steps < 1500:
-                    layer_dropping_rate = 0.0
-                elif completed_steps < 3000:
-                    layer_dropping_rate = 0.1
-                elif completed_steps < 4000:
-                    layer_dropping_rate = 0.2
-                elif completed_steps < 5000:
-                    layer_dropping_rate = 0.3
-                elif completed_steps < 6500:
-                    layer_dropping_rate = 0.4
-                else:
-                    layer_dropping_rate = 0.5
+                # if completed_steps < 5000:
+                #     layer_dropping_rate = 0.0
+                # elif completed_steps < 7500:
+                #     layer_dropping_rate = 0.1
+                # elif completed_steps < 1000:
+                #     layer_dropping_rate = 0.2
+                # elif completed_steps < 12500:
+                #     layer_dropping_rate = 0.3
+                # elif completed_steps < 15000:
+                #     layer_dropping_rate = 0.4
+                # else:
+                #     layer_dropping_rate = 0.5
+
+                layer_attn_gates = [1] * int(config.num_hidden_layers / 2) + [0] * int(config.num_hidden_layers / 2)
+                layer_ffn_gates = [1] * int(config.num_hidden_layers / 2) + [0] * int(config.num_hidden_layers / 2)
+                batch["layer_attn_gates"] = layer_attn_gates
+                batch["layer_ffn_gates"] = layer_ffn_gates
+
+                # batch["layer_attn_gates"] = np.random.binomial(
+                #     1,
+                #     1 - layer_dropping_rate,
+                #     config.num_hidden_layers,
+                # ).tolist()
+                # batch["layer_ffn_gates"] = np.random.binomial(
+                #     1,
+                #     1 - layer_dropping_rate,
+                #     config.num_hidden_layers,
+                # ).tolist()
 
                 model.train()
                 with accelerator.accumulate(model):
 
                     if not training_args.use_consistency_loss:
-                        batch["layer_attn_gates"] = np.random.binomial(
-                            1,
-                            1 - layer_dropping_rate,
-                            config.num_hidden_layers,
-                        ).tolist()
-                        batch["layer_ffn_gates"] = np.random.binomial(
-                            1,
-                            1 - layer_dropping_rate,
-                            config.num_hidden_layers,
-                        ).tolist()
-
                         outputs = model(**batch)
                         loss = outputs.loss
                     else:
-                        layer_attn_gates_1 = np.random.binomial(
-                            1,
-                            1 - layer_dropping_rate,
-                            config.num_hidden_layers,
-                        ).tolist()
-                        layer_ffn_gates_1 = np.random.binomial(
-                            1,
-                            1 - layer_dropping_rate,
-                            config.num_hidden_layers,
-                        ).tolist()
-                        layer_attn_gates_2 = np.random.binomial(
-                            1,
-                            1 - layer_dropping_rate,
-                            config.num_hidden_layers,
-                        ).tolist()
-                        layer_ffn_gates_2 = np.random.binomial(
-                            1,
-                            1 - layer_dropping_rate,
-                            config.num_hidden_layers,
-                        ).tolist()
-
-                        loss = model.consistency_loss(
-                            layer_attn_gates_1,
-                            layer_ffn_gates_1,
-                            layer_attn_gates_2,
-                            layer_ffn_gates_2,
-                            **batch
-                        )
+                        loss = model.consistency_loss(**batch)
                     total_loss += loss.detach().float()
 
-                    if random.uniform(0, 1) < 0.05:
+                    if random.uniform(0, 1) < 0.01:
                         print("loss: ", loss.detach().float())
 
                     accelerator.backward(loss)
@@ -702,28 +680,14 @@ def main():
                         eval_loss = eval_model(
                             model,
                             eval_dataloader,
-                            layer_attn_gates=[1, 1, 1, 1] * int(config.num_hidden_layers / 4),
-                            layer_ffn_gates=[1, 1, 1, 1] * int(config.num_hidden_layers / 4),
+                            layer_attn_gates=layer_attn_gates,
+                            layer_ffn_gates=layer_ffn_gates,
                         )
                         if eval_loss < best_loss_full_model:
                             best_loss_full_model = eval_loss
                             best_steps_full_model = completed_steps
-                        logger.info(f"current eval_loss with full model: {eval_loss}; completed_steps: {completed_steps}")
-                        logger.info(f"current best_loss_full_model: {best_loss_full_model}; best_steps_full_model: {best_steps_full_model}")
-
-                        # eval model with structural drop
-                        eval_loss = eval_model(
-                            model,
-                            eval_dataloader,
-                            layer_attn_gates=[0, 1, 0, 1] * int(config.num_hidden_layers / 4),
-                            layer_ffn_gates=[1, 0, 1, 0] * int(config.num_hidden_layers / 4),
-                        )
-                        logger.info(f"completed_steps: {completed_steps}; eval loss: {eval_loss}")
-                        if eval_loss < best_loss:
-                            best_loss = eval_loss
-                            best_steps = completed_steps
-                            # logger.info(f"best_loss: {best_loss}; best_steps: {best_steps}")
-                        logger.info(f"current best_loss: {best_loss}; best_steps: {best_steps}")
+                        logger.info(f"current eval_loss with half model: {eval_loss}; completed_steps: {completed_steps}")
+                        logger.info(f"current best_loss half model: {best_loss_full_model}; best_steps_full_model: {best_steps_full_model}")
 
             print("avg loss: ", total_loss.item() / len(train_dataloader))
             if completed_steps >= training_args.max_train_steps:
@@ -794,21 +758,11 @@ if __name__ == "__main__":
 
     '''
     # debug
-    CUDA_VISIBLE_DEVICES="3" python src/gpt2/run_sft.py  --dataset_name datasets/alpaca/ --model_name_or_path resources/gpt2 --block_size 1024 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 2 --gradient_accumulation_steps 8 --num_train_epochs 10 --warmup_steps 100 --output_dir experiments/gpt2_debug_0 --do_train --do_eval --eval_steps 200 --learning_rate 2e-4 --use_consistency_loss True
+    CUDA_VISIBLE_DEVICES="4" python src/gpt2/run_sft_half.py  --dataset_name datasets/alpaca/ --model_name_or_path resources/gpt2 --block_size 1024 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 4 --gradient_accumulation_steps 8 --num_train_epochs 10 --warmup_steps 100 --output_dir experiments/gpt2_debug_0 --do_train --do_eval --eval_steps 200 --learning_rate 2e-4
     
+    python src/gpt2/run_sft_half.py  --dataset_name datasets/sst-2/ --model_name_or_path resources/gpt2 --block_size 1024 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 8 --gradient_accumulation_steps 1 --num_train_epochs 10 --warmup_steps 100 --output_dir experiments/gpt2_debug_0 --do_train --do_eval --eval_steps 200 --learning_rate 2e-4
     
-    
-    
-    python src/gpt2/run_sft.py  --dataset_name datasets/sst-2/ --model_name_or_path resources/gpt2 --block_size 1024 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 8 --gradient_accumulation_steps 1 --num_train_epochs 10 --warmup_steps 100 --output_dir experiments/gpt2_debug_0 --do_train --do_eval --eval_steps 200 --learning_rate 2e-4
-    
-    # 直接训练前6层：因为语言模型头lm_head，loss很大， 难以收敛 dev loss 0.13574
-    
-    # train with layer drop:
-    - full 0.125; drop 0.17578125
-    
-    # train without layer drop
-    - FULL 0.11474609375; drop: 0.345703125
-    
+    # 直接训练前6层：因为语言模型头lm_head，loss很大， 难以收敛
     
 
     

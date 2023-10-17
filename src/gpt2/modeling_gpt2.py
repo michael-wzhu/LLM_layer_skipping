@@ -17,6 +17,7 @@
 
 import math
 import os
+import random
 import warnings
 from dataclasses import dataclass
 from typing import Optional, Tuple, Union
@@ -47,6 +48,8 @@ from transformers.utils import (
     replace_return_docstrings,
 )
 from transformers.utils.model_parallel_utils import assert_device_map, get_device_map
+
+from src.divergence_utils import symmetric_kl_distance
 from src.gpt2.configuration_gpt2 import GPT2Config
 from src.modules.adapters import ParallelAdapter
 
@@ -411,7 +414,12 @@ class GPT2Block(nn.Module):
         self.mlp = GPT2MLP(inner_dim, config)
 
         # adapter
-        self.adapter = ParallelAdapter(
+        self.attn_adapter = ParallelAdapter(
+            d_model=hidden_size,
+            bottleneck_dim=config.adapter_rank,
+            dropout=config.adapter_dropout,
+        )
+        self.ffn_adapter = ParallelAdapter(
             d_model=hidden_size,
             bottleneck_dim=config.adapter_rank,
             dropout=config.adapter_dropout,
@@ -427,11 +435,12 @@ class GPT2Block(nn.Module):
         encoder_attention_mask: Optional[torch.FloatTensor] = None,
         use_cache: Optional[bool] = False,
         output_attentions: Optional[bool] = False,
-            layer_gate=1
+            layer_attn_gate=1.0,
+            layer_ffn_gate=1.0
     ) -> Union[Tuple[torch.Tensor], Optional[Tuple[torch.Tensor, Tuple[torch.FloatTensor, ...]]]]:
 
         residual = hidden_states
-        residual_block = hidden_states
+        residual_1 = hidden_states
 
         hidden_states = self.ln_1(hidden_states)
         attn_outputs = self.attn(
@@ -445,7 +454,15 @@ class GPT2Block(nn.Module):
         attn_output = attn_outputs[0]  # output_attn: a, present, (attentions)
         outputs = attn_outputs[1:]
         # residual connection
-        hidden_states = attn_output + residual
+        # hidden_states = attn_output + residual
+
+        # adapter
+        hidden_states_1 = self.attn_adapter(
+            residual_1,
+            add_residual=False
+        )
+        hidden_states = attn_output * layer_attn_gate + residual + hidden_states_1
+        residual_2 = hidden_states
 
         if encoder_hidden_states is not None:
             # add one self-attention block for cross-attention
@@ -473,14 +490,14 @@ class GPT2Block(nn.Module):
         hidden_states = self.ln_2(hidden_states)
         feed_forward_hidden_states = self.mlp(hidden_states)
         # residual connection
-        hidden_states = residual + feed_forward_hidden_states
+        # hidden_states = residual + feed_forward_hidden_states
 
         # 使用 layer_gate
-        hidden_states_1 = self.adapter(
-            residual_block,
+        hidden_states_2 = self.ffn_adapter(
+            residual_2,
             add_residual=False
         )
-        hidden_states = hidden_states * layer_gate + hidden_states_1
+        hidden_states = feed_forward_hidden_states * layer_ffn_gate + residual + hidden_states_2
 
         if use_cache:
             outputs = (hidden_states,) + outputs
@@ -819,7 +836,8 @@ class GPT2Model(GPT2PreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-            layer_gates=None,
+            layer_attn_gates=None,
+            layer_ffn_gates=None,
     ) -> Union[Tuple, BaseModelOutputWithPastAndCrossAttentions]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -938,7 +956,8 @@ class GPT2Model(GPT2PreTrainedModel):
                 def create_custom_forward(module):
                     def custom_forward(*inputs):
                         # None for past_key_value
-                        return module(*inputs, use_cache, output_attentions, layer_gates[i])
+                        return module(*inputs, use_cache, output_attentions,
+                                      layer_attn_gates[i], layer_ffn_gates[i])
 
                     return custom_forward
 
@@ -961,7 +980,8 @@ class GPT2Model(GPT2PreTrainedModel):
                     encoder_attention_mask=encoder_attention_mask,
                     use_cache=use_cache,
                     output_attentions=output_attentions,
-                    layer_gate=layer_gates[i]
+                    layer_attn_gate=layer_attn_gates[i],
+                    layer_ffn_gate=layer_ffn_gates[i]
                 )
 
             hidden_states = outputs[0]
@@ -1016,6 +1036,11 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
         super().__init__(config)
         self.transformer = GPT2Model(config)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+
+        self.lm_head_lora = nn.Sequential(
+            nn.Linear(config.n_embd, config.lora_rank // 2, bias=False),
+            nn.Linear(config.lora_rank // 2, config.vocab_size, bias=False),
+        )
 
         # Model parallel
         self.model_parallel = False
@@ -1120,7 +1145,8 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-            layer_gates=None
+            layer_attn_gates=None,
+            layer_ffn_gates=None
     ) -> Union[Tuple, CausalLMOutputWithCrossAttentions]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
@@ -1144,7 +1170,8 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
-            layer_gates=layer_gates
+            layer_attn_gates=layer_attn_gates,
+            layer_ffn_gates=layer_ffn_gates,
         )
         hidden_states = transformer_outputs[0]
 
@@ -1153,7 +1180,8 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
             torch.cuda.set_device(self.transformer.first_device)
             hidden_states = hidden_states.to(self.lm_head.weight.device)
 
-        lm_logits = self.lm_head(hidden_states)
+        # lm_logits = self.lm_head(hidden_states)
+        lm_logits = self.lm_head(hidden_states) + self.lm_head_lora(hidden_states)
 
         loss = None
         if labels is not None:
@@ -1178,6 +1206,34 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
             attentions=transformer_outputs.attentions,
             cross_attentions=transformer_outputs.cross_attentions,
         )
+
+    def consistency_loss(self,
+                         layer_attn_gates_1,
+                         layer_ffn_gates_1,
+                         layer_attn_gates_2,
+                         layer_ffn_gates_2,
+                         **batch):
+
+        batch["layer_attn_gates"] = layer_attn_gates_1
+        batch["layer_ffn_gates"] = layer_ffn_gates_1
+        output_1 = self(**batch)
+
+        batch["layer_attn_gates"] = layer_attn_gates_2
+        batch["layer_ffn_gates"] = layer_ffn_gates_2
+        output_2 = self(**batch)
+
+        loss_1 = output_1.loss
+        lm_logits_1 = output_1.logits
+        loss_2 = output_2.loss
+        lm_logits_2 = output_2.logits
+        kl_div = symmetric_kl_distance(lm_logits_1.view(-1), lm_logits_2.view(-1))
+
+        if random.uniform(0, 1) < 0.1:
+            print("loss_1: ", loss_1)
+            print("loss_2: ", loss_2)
+            print("kl_div: ", kl_div)
+
+        return (loss_1 + loss_2) / 2 + torch.max(torch.tensor([kl_div, 0.1]).to(torch.device("cuda")))
 
     @staticmethod
     def _reorder_cache(
