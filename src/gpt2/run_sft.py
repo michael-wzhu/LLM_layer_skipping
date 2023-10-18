@@ -805,7 +805,7 @@ if __name__ == "__main__":
     # debug
     CUDA_VISIBLE_DEVICES="3" nohup python src/gpt2/run_sft.py  --dataset_name datasets/alpaca/ --model_name_or_path resources/gpt2 --block_size 1024 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 2 --gradient_accumulation_steps 8 --num_train_epochs 10 --warmup_steps 100 --output_dir experiments/gpt2_debug_0 --do_train --do_eval --eval_steps 200 --learning_rate 2e-4 --use_consistency_loss True > train_0.log & 
     
-    # 直接训练前6层：因为语言模型头lm_head，loss很大， 难以收敛 dev loss 2.765625
+    # 直接训练前6层：因为语言模型头lm_head，loss很大， 难以收敛 dev loss 2.865625
     
     
     
