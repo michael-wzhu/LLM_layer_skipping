@@ -722,6 +722,15 @@ def main():
                         if eval_loss < best_loss:
                             best_loss = eval_loss
                             best_steps = completed_steps
+                            accelerator.wait_for_everyone()
+                            unwrapped_model = accelerator.unwrap_model(model)
+                            unwrapped_model.save_pretrained(
+                                training_args.output_dir, is_main_process=accelerator.is_main_process,
+                                save_function=accelerator.save
+                            )
+                            if accelerator.is_main_process:
+                                tokenizer.save_pretrained(training_args.output_dir)
+
                             # logger.info(f"best_loss: {best_loss}; best_steps: {best_steps}")
                         logger.info(f"current best_loss: {best_loss}; best_steps: {best_steps}")
 
