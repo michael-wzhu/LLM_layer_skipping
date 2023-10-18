@@ -1191,7 +1191,7 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
             shift_logits = lm_logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
             # Flatten the tokens
-            loss_fct = CrossEntropyLoss()
+            loss_fct = CrossEntropyLoss(reduction="mean")
             loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
 
         if not return_dict:
@@ -1228,12 +1228,12 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
         lm_logits_2 = output_2.logits
         kl_div = symmetric_kl_distance(lm_logits_1.view(-1), lm_logits_2.view(-1))
 
-        if random.uniform(0, 1) < 0.1:
+        if random.uniform(0, 1) < 0.001:
             print("loss_1: ", loss_1)
             print("loss_2: ", loss_2)
             print("kl_div: ", kl_div)
 
-        return (loss_1 + loss_2) / 2 + 0.2 * torch.max(torch.tensor([kl_div, 0.1]).to(torch.device("cuda")))
+        return (loss_1 + loss_2) / 2 + 0.1 * torch.max(torch.tensor([kl_div, 0.1]).to(torch.device("cuda")))
 
     @staticmethod
     def _reorder_cache(
