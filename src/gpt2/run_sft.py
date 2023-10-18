@@ -807,6 +807,7 @@ if __name__ == "__main__":
     
     # 直接训练前6层：因为语言模型头lm_head，loss很大， 难以收敛 dev loss 2.865625
     
+    # 
     
     
     
@@ -821,7 +822,10 @@ if __name__ == "__main__":
     - FULL 0.11474609375; drop: 0.345703125
     
     
-
+    
+    # 数据集：
+    #  (1) https://huggingface.co/datasets/QingyiSi/Alpaca-CoT/tree/main/baize
+    #  (2) https://huggingface.co/datasets/TokenBender/code_instructions_122k_alpaca_style/tree/main
     
     
     '''
