@@ -1228,7 +1228,7 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
         lm_logits_2 = output_2.logits
         kl_div = symmetric_kl_distance(lm_logits_1.view(-1), lm_logits_2.view(-1))
 
-        if random.uniform(0, 1) < 0.001:
+        if random.uniform(0, 1) < 0.01:
             print("loss_1: ", loss_1)
             print("loss_2: ", loss_2)
             print("kl_div: ", kl_div)

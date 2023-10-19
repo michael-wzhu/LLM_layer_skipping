@@ -725,7 +725,7 @@ def main():
                         )
                     total_loss += loss.detach().float()
 
-                    if random.uniform(0, 1) < 0.05:
+                    if random.uniform(0, 1) < 0.01:
                         print("loss: ", loss.detach().float())
 
                     accelerator.backward(loss)
@@ -843,7 +843,7 @@ if __name__ == "__main__":
 
     '''
     # debug
-    CUDA_VISIBLE_DEVICES="4" nohup python -u src/gpt2/run_sft_ultrachat.py  --dataset_name datasets/ultraChat/ --model_name_or_path resources/gpt2-large --block_size 1024 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 1 --gradient_accumulation_steps 64 --num_train_epochs 10 --warmup_steps 100 --output_dir experiments/gpt2_debug_0 --do_train --do_eval --eval_steps 200 --learning_rate 2e-4 --use_consistency_loss True > train_1.log & 
+    CUDA_VISIBLE_DEVICES="4" nohup python -u src/gpt2/run_sft_ultrachat.py  --dataset_name datasets/ultraChat/ --model_name_or_path resources/gpt2-large --block_size 512 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 4 --gradient_accumulation_steps 24 --num_train_epochs 10 --warmup_steps 100 --output_dir experiments/gpt2_debug_0 --do_train --do_eval --eval_steps 50 --learning_rate 2e-4 --use_consistency_loss True > train_1.log & 
     
     
     '''
