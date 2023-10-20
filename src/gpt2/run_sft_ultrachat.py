@@ -362,13 +362,13 @@ def main():
             query_ = dialogues[2 * round_idx]
             response_ = dialogues[2 * round_idx + 1]
 
-            input_1 = f"{query_}”\n"
-            input_2 = f"{response_}<|endoftext|>"
+            input_1 = f"<|endoftext|>user:\n{query_}\n"
+            input_2 = f"<|endoftext|>assistant:\n{response_}<|endoftext|>"
             input_ids_1 = tokenizer(input_1, return_tensors="pt")["input_ids"].cpu().numpy().tolist()[0]
             input_ids_2 = tokenizer(input_2, return_tensors="pt")["input_ids"].cpu().numpy().tolist()[0]
 
             input_ids.extend(input_ids_1 + input_ids_2)
-            labels.extend([-100] * len(input_ids_1) + input_ids_2)
+            labels.extend(input_ids_1 + input_ids_2)
 
         attention_mask = [1] * len(input_ids)
 
@@ -451,12 +451,9 @@ def main():
     raw_datasets = load_dataset(
         "json",
         data_files={
-            "train": [
-                os.path.join(data_args.dataset_name, "train_0.jsonl"),
-                # os.path.join(data_args.dataset_name, "train_1.jsonl"),
-            ],
+            "train": os.path.join(data_args.dataset_name, "train.json"),
             # "dev": os.path.join(data_args.dataset_name, "dev.json"),
-            # "test": os.path.join(data_args.dataset_name, "test.json"),
+            "test": os.path.join(data_args.dataset_name, "test.json"),
         },
         # cache_dir=data_args.dataset_cache_dir,
         # use_auth_token=True if model_args.use_auth_token else None,
@@ -484,8 +481,9 @@ def main():
         cache_file_names = {k: os.path.join(data_args.dataset_name, f'grouped_{k}.arrow') for k in tokenized_dataset},
         desc=f"Grouping texts in chunks of {block_size}",
     )
+    lm_datasets = tokenized_dataset
 
-    lm_datasets = tokenized_dataset["train"].train_test_split(test_size=0.01)
+    # lm_datasets = tokenized_dataset["train"].train_test_split(test_size=0.02)
     lm_datasets["dev"] = lm_datasets["test"]
     print(lm_datasets)
 
@@ -663,16 +661,15 @@ def main():
             for step, batch in enumerate(active_dataloader):
 
                 # layer_dropping_rate = 0.0
-
-                if completed_steps < 1500:
+                if completed_steps < 1000:
                     layer_dropping_rate = 0.0
-                elif completed_steps < 3000:
+                elif completed_steps < 2000:
                     layer_dropping_rate = 0.1
-                elif completed_steps < 4000:
+                elif completed_steps < 3000:
                     layer_dropping_rate = 0.2
-                elif completed_steps < 5000:
+                elif completed_steps < 4000:
                     layer_dropping_rate = 0.3
-                elif completed_steps < 6500:
+                elif completed_steps < 5000:
                     layer_dropping_rate = 0.4
                 else:
                     layer_dropping_rate = 0.5
@@ -755,8 +752,8 @@ def main():
                         eval_loss = eval_model(
                             model,
                             eval_dataloader,
-                            layer_attn_gates=[0, 1, 0, 1] * int(config.num_hidden_layers / 4),
-                            layer_ffn_gates=[1, 0, 1, 0] * int(config.num_hidden_layers / 4),
+                            layer_attn_gates=[1, 0, 1, 0] * int(config.num_hidden_layers / 4),
+                            layer_ffn_gates=[0, 1, 0, 1] * int(config.num_hidden_layers / 4),
                         )
                         logger.info(f"completed_steps: {completed_steps}; eval loss: {eval_loss}")
                         if eval_loss < best_loss:
@@ -781,7 +778,6 @@ def main():
         logger.info("*" * 50)
         logger.info(f"best steps: {best_steps}; best loss: {best_loss}")
         logger.info("*" * 50)
-
 
     if training_args.do_generation:
         model.eval()
@@ -843,7 +839,7 @@ if __name__ == "__main__":
 
     '''
     # debug
-    CUDA_VISIBLE_DEVICES="4" nohup python -u src/gpt2/run_sft_ultrachat.py  --dataset_name datasets/ultraChat/ --model_name_or_path resources/gpt2-large --block_size 512 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 4 --gradient_accumulation_steps 24 --num_train_epochs 10 --warmup_steps 100 --output_dir experiments/gpt2_debug_0 --do_train --do_eval --eval_steps 50 --learning_rate 2e-4 --use_consistency_loss True > train_1.log & 
+    CUDA_VISIBLE_DEVICES="4" nohup python -u src/gpt2/run_sft_ultrachat.py --seed 600 --dataset_name datasets/ultraChat/ --model_name_or_path resources/gpt2-large --block_size 640 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 4 --per_device_eval_batch_size 12 --gradient_accumulation_steps 12 --num_train_epochs 10 --warmup_steps 100 --output_dir experiments/gpt2_debug_0 --do_train --do_eval --eval_steps 50 --learning_rate 2e-4 --use_consistency_loss True --overwrite_output_dir > train_2.log & 
     
     
     '''

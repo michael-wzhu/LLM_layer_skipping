@@ -1037,10 +1037,10 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
         self.transformer = GPT2Model(config)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
-        # self.lm_head_lora = nn.Sequential(
-        #     nn.Linear(config.n_embd, config.lora_rank // 2, bias=False),
-        #     nn.Linear(config.lora_rank // 2, config.vocab_size, bias=False),
-        # )
+        self.lm_head_lora = nn.Sequential(
+            nn.Linear(config.n_embd, config.lora_rank // 4, bias=False),
+            nn.Linear(config.lora_rank // 4, config.vocab_size, bias=False),
+        )
 
         # Model parallel
         self.model_parallel = False
@@ -1180,8 +1180,8 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
             torch.cuda.set_device(self.transformer.first_device)
             hidden_states = hidden_states.to(self.lm_head.weight.device)
 
-        lm_logits = self.lm_head(hidden_states)
-        # lm_logits = self.lm_head(hidden_states) + self.lm_head_lora(hidden_states)
+        # lm_logits = self.lm_head(hidden_states)
+        lm_logits = self.lm_head(hidden_states) + self.lm_head_lora(hidden_states)
 
         loss = None
         if labels is not None:
@@ -1191,7 +1191,7 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
             shift_logits = lm_logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
             # Flatten the tokens
-            loss_fct = CrossEntropyLoss(reduction="mean")
+            loss_fct = CrossEntropyLoss()
             loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
 
         if not return_dict:

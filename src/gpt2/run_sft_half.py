@@ -28,6 +28,7 @@ import os
 import random
 import sys
 from dataclasses import dataclass, field
+from itertools import chain
 from typing import Optional
 
 import datasets
@@ -347,40 +348,72 @@ def main():
     # since this will be pickled to avoid _LazyModule error in Hasher force logger loading before tokenize_function
     tok_logger = transformers.utils.logging.get_logger("transformers.tokenization_utils_base")
 
+    # def tokenize_function(example):
+    #
+    #     max_seq_length = 1024
+    #
+    #     input = example.get("input")
+    #     if not input:
+    #         input = example.get("instruction")
+    #     input = f"{input}”\n"
+    #     instructions = input
+    #     target = example.get("target")
+    #     if not target:
+    #         target = example.get("response")
+    #
+    #     eos_token_ids = tokenizer("<|endoftext|>", return_tensors="pt")["input_ids"].cpu().numpy().tolist()[0]
+    #
+    #     input_ids_1 = tokenizer(input, return_tensors="pt")["input_ids"].cpu().numpy().tolist()[0]
+    #     input_ids_2 = tokenizer(target, return_tensors="pt")["input_ids"].cpu().numpy().tolist()[0]
+    #     # print("input_ids_1: ", input_ids_1)
+    #     # print("input_ids_2: ", input_ids_2)
+    #
+    #     input_ids = input_ids_1 + input_ids_2 + eos_token_ids
+    #     labels = [-100] * len(input_ids_1) + input_ids_2 + eos_token_ids
+    #     attention_mask = [1] * len(input_ids)
+    #
+    #     input_ids = input_ids[- max_seq_length: ]
+    #     labels = labels[- max_seq_length: ]
+    #     attention_mask = attention_mask[- max_seq_length: ]
+    #
+    #     # if random.uniform(0, 1) < 0.01:
+    #     #     print("input_ids: ", len(input_ids))
+    #     #     print("labels: ", len(labels))
+    #     #     print("attention_mask: ", len(attention_mask))
+    #
+    #     assert len(input_ids) == len(labels) == len(attention_mask)
+    #     return {
+    #         "input_ids": input_ids,
+    #         "attention_mask": attention_mask,
+    #         "labels": labels,
+    #     }
+
     def tokenize_function(example):
 
-        max_seq_length = 1024
+        # max_seq_length = 1024
 
-        input = example.get("input")
-        if not input:
-            input = example.get("instruction")
-        input = f"{input}”\n"
-        instructions = input
-        target = example.get("target")
-        if not target:
-            target = example.get("response")
+        dialogues = example.get("data")
+        # print(len(dialogues))
+        assert len(dialogues) % 2 == 0
 
-        eos_token_ids = tokenizer("<|endoftext|>", return_tensors="pt")["input_ids"].cpu().numpy().tolist()[0]
+        input_ids = []
+        labels = []
+        for round_idx in range(int(len(dialogues) / 2)):
+            query_ = dialogues[2 * round_idx]
+            response_ = dialogues[2 * round_idx + 1]
 
-        input_ids_1 = tokenizer(input, return_tensors="pt")["input_ids"].cpu().numpy().tolist()[0]
-        input_ids_2 = tokenizer(target, return_tensors="pt")["input_ids"].cpu().numpy().tolist()[0]
-        # print("input_ids_1: ", input_ids_1)
-        # print("input_ids_2: ", input_ids_2)
+            input_1 = f"<|endoftext|>user:\n{query_}\n"
+            input_2 = f"<|endoftext|>assistant:\n{response_}<|endoftext|>"
+            input_ids_1 = tokenizer(input_1, return_tensors="pt")["input_ids"].cpu().numpy().tolist()[0]
+            input_ids_2 = tokenizer(input_2, return_tensors="pt")["input_ids"].cpu().numpy().tolist()[0]
 
-        input_ids = input_ids_1 + input_ids_2 + eos_token_ids
-        labels = [-100] * len(input_ids_1) + input_ids_2 + eos_token_ids
+            input_ids.extend(input_ids_1 + input_ids_2)
+            labels.extend([-100] * len(input_ids_1) + input_ids_2)
+
         attention_mask = [1] * len(input_ids)
 
-        input_ids = input_ids[- max_seq_length: ]
-        labels = labels[- max_seq_length: ]
-        attention_mask = attention_mask[- max_seq_length: ]
-
-        # if random.uniform(0, 1) < 0.01:
-        #     print("input_ids: ", len(input_ids))
-        #     print("labels: ", len(labels))
-        #     print("attention_mask: ", len(attention_mask))
-
         assert len(input_ids) == len(labels) == len(attention_mask)
+        # print("length of input_ids: ", len(input_ids))
         return {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
@@ -424,13 +457,40 @@ def main():
             )
         block_size = min(data_args.block_size, tokenizer.model_max_length)
 
+    def group_texts(examples):
+        # Concatenate all texts.
+        concatenated_examples = {k: list(chain(*examples[k])) for k in examples.keys()}
+        total_length = len(concatenated_examples["input_ids"])
+
+        # We drop the small remainder, we could add padding if the model supported it instead of this drop, you can
+        # customize this part to your needs.
+        if total_length >= block_size:
+            total_length = (total_length // block_size + 1) * block_size
+        # Split by chunks of max_len.
+        result = {}
+        for k, t in concatenated_examples.items():
+            if total_length > len(t):
+                if k == "input_ids":
+                    t = t + [tokenizer.eos_token_id] * (total_length - len(t))
+                elif k == "attention_mask":
+                    t = t + [0] * (total_length - len(t))
+                else:
+                    t = t + [-100] * (total_length - len(t))
+
+            truncs = [t[i : i + block_size] for i in range(0, total_length, block_size)]
+            result[k] = truncs
+
+        # for k in result:
+        #     print(k, len(result[k]))
+        return result
+
     # with training_args.main_process_first(desc="dataset map tokenization and grouping"):
     raw_datasets = load_dataset(
         "json",
         data_files={
             "train": os.path.join(data_args.dataset_name, "train.json"),
-            "dev": os.path.join(data_args.dataset_name, "dev.json"),
-            # "test": os.path.join(data_args.dataset_name, "test.json"),
+            # "dev": os.path.join(data_args.dataset_name, "dev.json"),
+            "test": os.path.join(data_args.dataset_name, "test.json"),
         },
         # cache_dir=data_args.dataset_cache_dir,
         # use_auth_token=True if model_args.use_auth_token else None,
@@ -438,24 +498,40 @@ def main():
     tokenized_dataset = raw_datasets.map(
                 tokenize_function,
                 batched=False,
-                num_proc=1,
+                num_proc=12,
                 remove_columns=raw_datasets["train"].column_names,
+                load_from_cache_file=True,
+                cache_file_names={k: os.path.join(data_args.dataset_name, f'tokenized_{k}.arrow') for k in raw_datasets},
                 desc="Running tokenizer on dataset",
             )
     print("tokenized_dataset: ", tokenized_dataset)
     print(tokenized_dataset["train"][3]['input_ids'])
     print(tokenized_dataset["train"][3]['labels'])
 
+    tokenized_dataset = tokenized_dataset.map(
+        group_texts,
+        batched=True,
+        # batch_size=1024,
+        num_proc=8,
+        load_from_cache_file=True,
+        keep_in_memory=False,
+        cache_file_names={k: os.path.join(data_args.dataset_name, f'grouped_{k}.arrow') for k in tokenized_dataset},
+        desc=f"Grouping texts in chunks of {block_size}",
+    )
+
+    # lm_datasets = tokenized_dataset["train"].train_test_split(test_size=0.02)
+
     lm_datasets = tokenized_dataset
+    lm_datasets["dev"] = lm_datasets["test"]
     print(lm_datasets)
 
-    test_dataset = raw_datasets["dev"].map(
-                tokenize_function_eval,
-                batched=False,
-                num_proc=1,
-                desc="Running tokenizer on test dataset",
-            )
-    print(test_dataset)
+    # test_dataset = raw_datasets["dev"].map(
+    #             tokenize_function_eval,
+    #             batched=False,
+    #             num_proc=1,
+    #             desc="Running tokenizer on test dataset",
+    #         )
+    # print(test_dataset)
 
     if training_args.do_train:
         train_dataset = lm_datasets['train']
@@ -758,11 +834,7 @@ if __name__ == "__main__":
 
     '''
     # debug
-    CUDA_VISIBLE_DEVICES="4" python src/gpt2/run_sft_half.py  --dataset_name datasets/alpaca/ --model_name_or_path resources/gpt2 --block_size 1024 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 4 --gradient_accumulation_steps 8 --num_train_epochs 10 --warmup_steps 100 --output_dir experiments/gpt2_debug_0 --do_train --do_eval --eval_steps 200 --learning_rate 2e-4
-    
-    python src/gpt2/run_sft_half.py  --dataset_name datasets/sst-2/ --model_name_or_path resources/gpt2 --block_size 1024 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 8 --gradient_accumulation_steps 1 --num_train_epochs 10 --warmup_steps 100 --output_dir experiments/gpt2_debug_0 --do_train --do_eval --eval_steps 200 --learning_rate 2e-4
-    
-    # 直接训练前6层：因为语言模型头lm_head，loss很大， 难以收敛
+    CUDA_VISIBLE_DEVICES="3" nohup python -u src/gpt2/run_sft_half.py  --dataset_name datasets/ultraChat --model_name_or_path resources/gpt2-large --block_size 640 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 1 --gradient_accumulation_steps 24 --num_train_epochs 10 --warmup_steps 100 --output_dir experiments/gpt2_debug_1 --do_train --do_eval --eval_steps 100 --learning_rate 2e-4 > train_half_0.log &
     
 
     
