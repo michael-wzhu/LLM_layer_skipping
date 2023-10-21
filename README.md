@@ -6,7 +6,7 @@ train a LM with the ability to skipping layers with less performance degradation
 
 - lora + adapter: lora to fine-tune the weights, adapter to alleviate the skipping
 - skipping attn/fnn module instead of the whole block
-- Further pretraining on UltraChat (only use split 1 of 10 for now, consider increasing the data size in TODO )
+- Further pretraining on UltraChat (only use split 1, 2 of 10 for now, consider increasing the data size in TODO )
 - consistency loss 
 
 
