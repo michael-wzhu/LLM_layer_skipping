@@ -9,6 +9,13 @@ train a LM with the ability to skipping layers with less performance degradation
 - Further pretraining on UltraChat (only use split 1, 2 of 10 for now, consider increasing the data size in TODO )
 - consistency loss 
 
+按照模型大小，验证在不同的模型大小上的结果对比：
+- GPT-2 large:
+  - 结果（dev集损失）显示：skip whole block 明显差于我们的 skipping attn/fnn modules; adapter添加是明显有效的； consistency loss有用
+  - 
+- falcon-1b
+- llama2-7b / 13b
+
 
 ## step 2
 
