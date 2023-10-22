@@ -1055,13 +1055,13 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
 
         # learnable gates
         self.layer_attn_gates = nn.Parameter(
-            1e+2 * torch.zeros_like(
+            1e+1 * torch.zeros_like(
                 torch.randn(self.config.num_hidden_layers, 1)
             ),
             requires_grad=True
         )
         self.layer_ffn_gates = nn.Parameter(
-            1e+2 * torch.zeros_like(
+            1e+1 * torch.zeros_like(
                 torch.randn(self.config.num_hidden_layers, 1)
             ),
             requires_grad=True
