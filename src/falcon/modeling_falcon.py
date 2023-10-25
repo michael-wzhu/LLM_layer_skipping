@@ -34,8 +34,9 @@ from transformers.modeling_outputs import (
 )
 from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import add_code_sample_docstrings, add_start_docstrings, add_start_docstrings_to_model_forward, logging
-from .configuration_falcon import FalconConfig
-from .divergence_utils import symmetric_kl_distance
+from src.falcon.configuration_falcon import FalconConfig
+from src.divergence_utils import symmetric_kl_distance
+from src.modules.adapters import ParallelAdapter
 
 logger = logging.get_logger(__name__)
 
@@ -221,16 +222,17 @@ class FalconAttention(nn.Module):
             qkv_out_dim = 3 * self.hidden_size
         self.query_key_value = FalconLinear(self.hidden_size, qkv_out_dim, bias=config.bias)
 
-        # 添加PEFT模块
-        self.qkv_adapt_weight_a = nn.Linear(self.hidden_size, 3 * 2 * config.lora_rank, bias=False)
-        self.qkv_adapt_weight_b = nn.Linear(3 * 2 * config.lora_rank, qkv_out_dim, bias=False)
 
         self.new_decoder_architecture = config.new_decoder_architecture
         self.multi_query = config.multi_query
         self.dense = FalconLinear(self.hidden_size, self.hidden_size, bias=config.bias)
 
-        self.dense_adapt_weight_a = nn.Linear(self.hidden_size, 2 * config.lora_rank, bias=False)
-        self.dense_adapt_weight_b = nn.Linear(2 * config.lora_rank, self.hidden_size, bias=False)
+        # 添加PEFT模块
+        self.qkv_lora_a = nn.Linear(self.hidden_size, 3 * config.lora_rank, bias=False)
+        self.qkv_lora_b = nn.Linear(3 * config.lora_rank, qkv_out_dim, bias=False)
+
+        self.dense_lora_a = nn.Linear(self.hidden_size, config.lora_rank, bias=False)
+        self.dense_lora_b = nn.Linear(config.lora_rank, self.hidden_size, bias=False)
 
         self.attention_dropout = nn.Dropout(config.attention_dropout)
         self.num_kv_heads = config.num_kv_heads if (self.new_decoder_architecture or not self.multi_query) else 1
@@ -301,16 +303,10 @@ class FalconAttention(nn.Module):
         head_mask: Optional[torch.Tensor] = None,
         use_cache: bool = False,
         output_attentions: bool = False,
-            qkv_lora_gate=None,
-            dense_lora_gate=None,
-            qkv_lora_mask=None,
-            dense_lora_mask=None,
     ):
         fused_qkv = self.query_key_value(hidden_states)  # [batch_size, seq_length, 3 x hidden_size]
-        fused_qkv = fused_qkv + self.qkv_adapt_weight_b(
-            F.dropout(self.qkv_adapt_weight_a(hidden_states), p=self.config.lora_dropout, training=self.training)
-            * F.dropout(qkv_lora_gate, p=self.config.lora_dropout, training=self.training)
-            * qkv_lora_mask
+        fused_qkv = fused_qkv + self.qkv_lora_b(
+            F.dropout(self.qkv_lora_a(hidden_states), p=self.config.lora_dropout, training=self.training)
         )
 
         num_kv_heads = self.num_heads if self.new_decoder_architecture else self.num_kv_heads
@@ -373,10 +369,8 @@ class FalconAttention(nn.Module):
 
             output_tensor = self.dense(attn_output)
             # print("output_tensor: ", output_tensor.shape)
-            output_tensor = output_tensor + self.dense_adapt_weight_b(
-                F.dropout(self.dense_adapt_weight_a(attn_output), p=self.config.lora_dropout, training=self.training)
-                * F.dropout(dense_lora_gate, p=self.config.lora_dropout, training=self.training)
-                * dense_lora_mask
+            output_tensor = output_tensor + self.dense_lora_b(
+                F.dropout(self.dense_lora_a(attn_output), p=self.config.lora_dropout, training=self.training)
             )
             # print("output_tensor: ", output_tensor.shape)
 
@@ -421,10 +415,8 @@ class FalconAttention(nn.Module):
 
             output_tensor = self.dense(context_layer)
             # print("output_tensor: ", output_tensor.shape)
-            output_tensor = output_tensor + self.dense_adapt_weight_b(
-                F.dropout(self.dense_adapt_weight_a(context_layer), p=self.config.lora_dropout, training=self.training)
-                * F.dropout(dense_lora_gate, p=self.config.lora_dropout, training=self.training)
-                * dense_lora_mask
+            output_tensor = output_tensor + self.dense_lora_b(
+                F.dropout(self.dense_lora_a(context_layer), p=self.config.lora_dropout, training=self.training)
             )
             # print("output_tensor: ", output_tensor.shape)
 
@@ -446,35 +438,25 @@ class FalconMLP(nn.Module):
         self.dense_4h_to_h = FalconLinear(4 * hidden_size, hidden_size, bias=config.bias)
         self.hidden_dropout = config.hidden_dropout
 
-        # 添加PEFT模块
-        self.dense_h_to_4h_adapt_weight_a = nn.Linear(hidden_size, 2 * config.lora_rank, bias=False)
-        self.dense_h_to_4h_adapt_weight_b = nn.Linear(2 * config.lora_rank, 4 * hidden_size, bias=False)
+        # add lora
+        self.dense_h_to_4h_lora_a = nn.Linear(hidden_size, config.lora_rank, bias=False)
+        self.dense_h_to_4h_lora_b = nn.Linear(config.lora_rank, 4 * hidden_size, bias=False)
 
-        self.dense_4h_to_h_adapt_weight_a = nn.Linear(4 * hidden_size, 2 * config.lora_rank, bias=False)
-        self.dense_4h_to_h_adapt_weight_b = nn.Linear(2 * config.lora_rank, hidden_size, bias=False)
+        self.dense_4h_to_h_lora_a = nn.Linear(4 * hidden_size, config.lora_rank, bias=False)
+        self.dense_4h_to_h_lora_b = nn.Linear(config.lora_rank, hidden_size, bias=False)
 
     def forward(self, x: torch.Tensor,
-                dense_h_to_4h_lora_gate=None,
-                dense_4h_to_h_lora_gate=None,
-                dense_h_to_4h_lora_mask=None,
-                dense_4h_to_h_lora_mask=None,
                 ) -> torch.Tensor:
         hidden_states_1 = self.dense_h_to_4h(x)
         # lora
-        hidden_states_1 = hidden_states_1 + self.dense_h_to_4h_adapt_weight_b(
-            F.dropout(self.dense_h_to_4h_adapt_weight_a(x), p=self.config.lora_dropout,
-                      training=self.training)
-            * F.dropout(dense_h_to_4h_lora_gate, p=self.config.lora_dropout, training=self.training)
-            * dense_h_to_4h_lora_mask
+        hidden_states_1 = hidden_states_1 + self.dense_h_to_4h_lora_b(
+            F.dropout(self.dense_h_to_4h_lora_a(x), p=self.config.lora_dropout, training=self.training)
         )
 
         x = self.act(hidden_states_1)
         x_1 = self.dense_4h_to_h(x)
-        x_1 = x_1 + self.dense_4h_to_h_adapt_weight_b(
-            F.dropout(self.dense_4h_to_h_adapt_weight_a(x), p=self.config.lora_dropout,
-                      training=self.training)
-            * F.dropout(dense_4h_to_h_lora_gate, p=self.config.lora_dropout, training=self.training)
-            * dense_4h_to_h_lora_mask
+        x_1 = x_1 + self.dense_4h_to_h_lora_b(
+            F.dropout(self.dense_4h_to_h_lora_a(x), p=self.config.lora_dropout, training=self.training)
         )
 
         return x_1
@@ -500,6 +482,18 @@ class FalconDecoderLayer(nn.Module):
             if not config.parallel_attn:
                 self.post_attention_layernorm = LayerNorm(hidden_size, eps=config.layer_norm_epsilon)
 
+        # adapter
+        self.attn_adapter = ParallelAdapter(
+            d_model=hidden_size,
+            bottleneck_dim=config.adapter_rank,
+            dropout=config.adapter_dropout,
+        )
+        self.ffn_adapter = ParallelAdapter(
+            d_model=hidden_size,
+            bottleneck_dim=config.adapter_rank,
+            dropout=config.adapter_dropout,
+        )
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -509,8 +503,8 @@ class FalconDecoderLayer(nn.Module):
         head_mask: Optional[torch.Tensor] = None,
         use_cache: bool = False,
         output_attentions: bool = False,
-            lora_gates=None,
-            lora_masks=None,
+            layer_attn_gate=1.0,
+            layer_ffn_gate=1.0
     ):
         residual = hidden_states
 
@@ -519,15 +513,6 @@ class FalconDecoderLayer(nn.Module):
             mlp_layernorm_out = self.ln_mlp(hidden_states)
         else:
             attention_layernorm_out = self.input_layernorm(hidden_states)
-
-        qkv_lora_gate = lora_gates[: 3, :]
-        qkv_lora_gate = qkv_lora_gate.view(-1)
-        dense_lora_gate = lora_gates[3, :]
-
-        qkv_lora_mask = lora_masks[: 3, :]
-        qkv_lora_mask = qkv_lora_mask.view(-1)
-        # print("qkv_lora_mask: ", qkv_lora_mask.shape)
-        dense_lora_mask = lora_masks[3, :]
 
         # Self attention.
         attn_outputs = self.self_attention(
@@ -538,13 +523,17 @@ class FalconDecoderLayer(nn.Module):
             head_mask=head_mask,
             use_cache=use_cache,
             output_attentions=output_attentions,
-            qkv_lora_gate=qkv_lora_gate,
-            dense_lora_gate=dense_lora_gate,
-            qkv_lora_mask=qkv_lora_mask,
-            dense_lora_mask=dense_lora_mask,
         )
 
         attention_output = attn_outputs[0]
+
+        # adapter
+        hidden_states_1 = self.attn_adapter(
+            residual,
+            add_residual=False
+        )
+        attention_output = attention_output * layer_attn_gate + residual + hidden_states_1
+        residual_2 = attention_output
 
         if not self.config.new_decoder_architecture:
             if self.config.parallel_attn:
@@ -557,17 +546,15 @@ class FalconDecoderLayer(nn.Module):
 
         outputs = attn_outputs[1:]
 
-        dense_h_to_4h_lora_gate = lora_gates[4, :]
-        dense_4h_to_h_lora_gate = lora_gates[5, :]
-        dense_h_to_4h_lora_mask = lora_masks[4, :]
-        dense_4h_to_h_lora_mask = lora_masks[5, :]
         # MLP.
         mlp_output = self.mlp(mlp_layernorm_out,
-                              dense_h_to_4h_lora_gate=dense_h_to_4h_lora_gate,
-                              dense_4h_to_h_lora_gate=dense_4h_to_h_lora_gate,
-                              dense_h_to_4h_lora_mask=dense_h_to_4h_lora_mask,
-                              dense_4h_to_h_lora_mask=dense_4h_to_h_lora_mask,
                               )
+
+        hidden_states_2 = self.ffn_adapter(
+            residual_2,
+            add_residual=False
+        )
+        hidden_states = mlp_output * layer_ffn_gate + residual + hidden_states_2
 
         if self.config.new_decoder_architecture or self.config.parallel_attn:
             mlp_output += attention_output

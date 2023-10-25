@@ -323,7 +323,7 @@ class GPT2Attention(nn.Module):
             attention_mask = encoder_attention_mask
         else:
             qkv = self.c_attn(hidden_states)
-            qkv = qkv + + self.c_attn_lora_b(
+            qkv = qkv + self.c_attn_lora_b(
                 F.dropout(self.c_attn_lora_a(hidden_states), p=self.config.lora_dropout, training=self.training)
             )
             query, key, value = qkv.split(self.split_size, dim=2)
