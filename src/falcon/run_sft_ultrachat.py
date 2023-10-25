@@ -54,6 +54,9 @@ sys.path.append("./")
 from src.gpt2.configuration_gpt2 import GPT2Config
 from src.gpt2.modeling_gpt2 import GPT2LMHeadModel
 
+from src.falcon.modeling_falcon import FalconForCausalLM
+from src.falcon.configuration_falcon import FalconConfig
+
 os.environ["WANDB_MODE"] = "disabled"
 
 
@@ -326,7 +329,7 @@ def main():
         "revision": model_args.model_revision,
         "use_auth_token": True if model_args.use_auth_token else None,
     }
-    config = GPT2Config.from_pretrained(model_args.model_name_or_path, **config_kwargs)
+    config = FalconConfig.from_pretrained(model_args.model_name_or_path, **config_kwargs)
     config.lora_rank = training_args.lora_rank
     config.lora_dropout = training_args.lora_dropout
     config.adapter_rank = training_args.adapter_rank
@@ -461,10 +464,10 @@ def main():
     tokenized_dataset = raw_datasets.map(
                 tokenize_function,
                 batched=False,
-                num_proc=8,
+                num_proc=12,
                 remove_columns=raw_datasets["train"].column_names,
                 load_from_cache_file=True,
-                cache_file_names={k: os.path.join(data_args.dataset_name, f'tokenized_{k}.arrow') for k in raw_datasets},
+                cache_file_names={k: os.path.join(data_args.dataset_name, f'falcon_tokenized_{k}.arrow') for k in raw_datasets},
                 desc="Running tokenizer on dataset",
             )
     print("tokenized_dataset: ", tokenized_dataset)
@@ -475,10 +478,10 @@ def main():
         group_texts,
         batched=True,
         # batch_size=1024,
-        num_proc=8,
+        num_proc=12,
         load_from_cache_file=True,
         keep_in_memory=False,
-        cache_file_names = {k: os.path.join(data_args.dataset_name, f'grouped_{k}.arrow') for k in tokenized_dataset},
+        cache_file_names = {k: os.path.join(data_args.dataset_name, f'falcon_grouped_{k}.arrow') for k in tokenized_dataset},
         desc=f"Grouping texts in chunks of {block_size}",
     )
     lm_datasets = tokenized_dataset
@@ -518,7 +521,7 @@ def main():
     # model = QWenLMHeadModel._from_config(
     #     config
     # )
-    model = GPT2LMHeadModel.from_pretrained(
+    model = FalconForCausalLM.from_pretrained(
         model_args.model_name_or_path,
         from_tf=bool(".ckpt" in model_args.model_name_or_path),
         config=config,
@@ -642,7 +645,7 @@ def main():
                 num_trained_params += p.numel()
             else:
                 total_model_params += p.numel()
-            print(n, p.requires_grad)
+            print(n, p.requires_grad, p.numel())
 
         logger.info("Total Model Parameters: {}, "
                     "Trainable Parameters: {}".format(
@@ -839,7 +842,7 @@ if __name__ == "__main__":
 
     '''
     # debug
-    CUDA_VISIBLE_DEVICES="4" nohup python -u src/gpt2/run_sft_ultrachat.py --seed 600 --dataset_name datasets/ultraChat/ --model_name_or_path resources/gpt2-large --block_size 640 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 4 --per_device_eval_batch_size 12 --gradient_accumulation_steps 12 --num_train_epochs 10 --warmup_steps 100 --output_dir experiments/gpt2_debug_0 --do_train --do_eval --eval_steps 50 --learning_rate 2e-4 --use_consistency_loss True --overwrite_output_dir > train_2.log & 
+    CUDA_VISIBLE_DEVICES="4" nohup python -u src/falcon/run_sft_ultrachat.py --seed 800 --dataset_name datasets/ultraChat/ --model_name_or_path ../activation_tuning/resources/falcon-rw-1b --block_size 768 --lora_rank 96 --adapter_rank 64 --per_device_train_batch_size 4 --per_device_eval_batch_size 12 --gradient_accumulation_steps 24 --num_train_epochs 10 --warmup_steps 100 --output_dir experiments/falcon_1b_debug_0 --do_train --do_eval --eval_steps 50 --learning_rate 2e-4 --use_consistency_loss True --overwrite_output_dir > falcon_1b_train_2.log & 
     
     
     '''

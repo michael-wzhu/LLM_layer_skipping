@@ -532,36 +532,45 @@ class FalconDecoderLayer(nn.Module):
             residual,
             add_residual=False
         )
-        attention_output = attention_output * layer_attn_gate + residual + hidden_states_1
-        residual_2 = attention_output
+        # attention_output = attention_output * layer_attn_gate + residual + hidden_states_1
+        # residual_2 = attention_output
 
         if not self.config.new_decoder_architecture:
             if self.config.parallel_attn:
                 mlp_layernorm_out = attention_layernorm_out
             else:
                 residual = dropout_add(
-                    attention_output, residual, self.config.attention_dropout, training=self.training
+                    attention_output * layer_attn_gate,
+                    residual + hidden_states_1,
+                    self.config.attention_dropout,
+                    training=self.training
                 )
                 mlp_layernorm_out = self.post_attention_layernorm(residual)
 
         outputs = attn_outputs[1:]
 
+        residue = mlp_layernorm_out
         # MLP.
         mlp_output = self.mlp(mlp_layernorm_out,
                               )
 
         hidden_states_2 = self.ffn_adapter(
-            residual_2,
+            residue,
             add_residual=False
         )
-        hidden_states = mlp_output * layer_ffn_gate + residual + hidden_states_2
+        # hidden_states = mlp_output * layer_ffn_gate + residual + hidden_states_2
 
         if self.config.new_decoder_architecture or self.config.parallel_attn:
             mlp_output += attention_output
 
         # print("residual: ", residual.shape)
         # print("mlp_output: ", mlp_output.shape)
-        output = dropout_add(mlp_output, residual, self.config.hidden_dropout, training=self.training)
+        output = dropout_add(
+            mlp_output * layer_ffn_gate,
+            residual + hidden_states_2,
+            self.config.hidden_dropout,
+            training=self.training
+        )
 
         if use_cache:
             outputs = (output,) + outputs
@@ -731,28 +740,6 @@ class FalconModel(FalconPreTrainedModel):
         # Transformer blocks
         self.h = nn.ModuleList([FalconDecoderLayer(config) for _ in range(config.num_hidden_layers)])
 
-        # lora masks
-        self.lora_masks = nn.Parameter(
-            torch.cat(
-                [
-                    torch.ones_like(
-                        torch.randn(self.config.num_hidden_layers, 6, config.lora_rank)
-                    ),
-                    torch.zeros_like(
-                        torch.randn(self.config.num_hidden_layers, 6, config.lora_rank)
-                    )
-                ],
-                dim=-1
-            ),
-            requires_grad=False
-        )
-        self.lora_gates = nn.Parameter(
-            torch.ones_like(
-                torch.randn(self.config.num_hidden_layers, 6, 2 * config.lora_rank)
-            ),
-            requires_grad=True
-        )
-
         # Final Layer Norm
         self.ln_f = LayerNorm(self.embed_dim, eps=config.layer_norm_epsilon)
 
@@ -815,6 +802,8 @@ class FalconModel(FalconPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+            layer_attn_gates=None,
+            layer_ffn_gates=None,
     ) -> Union[Tuple[torch.Tensor, ...], BaseModelOutputWithPastAndCrossAttentions]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -889,8 +878,8 @@ class FalconModel(FalconPreTrainedModel):
                         return module(*inputs,
                                       use_cache=use_cache,
                                       output_attentions=output_attentions,
-                                      lora_gates=self.lora_gates[i],
-                                      lora_masks=self.lora_masks[i],
+                                      layer_attn_gate=layer_attn_gates[i],
+                                      layer_ffn_gate=layer_ffn_gates[i],
                                       )
 
                     return custom_forward
@@ -911,8 +900,8 @@ class FalconModel(FalconPreTrainedModel):
                     use_cache=use_cache,
                     output_attentions=output_attentions,
                     alibi=alibi,
-                    lora_gates=self.lora_gates[i],
-                    lora_masks=self.lora_masks[i],
+                    layer_attn_gate=layer_attn_gates[i],
+                    layer_ffn_gate=layer_ffn_gates[i]
                 )
 
             hidden_states = outputs[0]
@@ -954,9 +943,9 @@ class FalconForCausalLM(FalconPreTrainedModel):
         self.transformer = FalconModel(config)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         self.lm_head_lora = nn.Sequential(
-            nn.Linear(config.hidden_size, 32, bias=False),
+            nn.Linear(config.hidden_size, config.lora_rank // 4, bias=False),
             nn.Dropout(0.1),
-            nn.Linear(32, config.vocab_size, bias=False),
+            nn.Linear(config.lora_rank // 4, config.vocab_size, bias=False),
         )
 
         # Initialize weights and apply final processing
@@ -1003,6 +992,8 @@ class FalconForCausalLM(FalconPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+            layer_attn_gates=None,
+            layer_ffn_gates=None
     ) -> Union[Tuple[torch.Tensor], CausalLMOutputWithCrossAttentions]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
@@ -1023,6 +1014,8 @@ class FalconForCausalLM(FalconPreTrainedModel):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+            layer_attn_gates=layer_attn_gates,
+            layer_ffn_gates=layer_ffn_gates,
         )
         hidden_states = transformer_outputs[0]
 
@@ -1053,8 +1046,17 @@ class FalconForCausalLM(FalconPreTrainedModel):
             attentions=transformer_outputs.attentions,
         )
 
-    def consistency_loss(self, **batch):
+    def consistency_loss(self, layer_attn_gates_1,
+                         layer_ffn_gates_1,
+                         layer_attn_gates_2,
+                         layer_ffn_gates_2,
+                         **batch):
+        batch["layer_attn_gates"] = layer_attn_gates_1
+        batch["layer_ffn_gates"] = layer_ffn_gates_1
         output_1 = self(**batch)
+
+        batch["layer_attn_gates"] = layer_attn_gates_2
+        batch["layer_ffn_gates"] = layer_ffn_gates_2
         output_2 = self(**batch)
 
         loss_1 = output_1.loss
@@ -1068,7 +1070,7 @@ class FalconForCausalLM(FalconPreTrainedModel):
             print("loss_2: ", loss_2)
             print("kl_div: ", kl_div)
 
-        return (loss_1 + loss_2) / 2 + torch.max(torch.tensor([kl_div, 1.0]).to(torch.device("cuda")))
+        return (loss_1 + loss_2) / 2 + 0.1 * torch.max(torch.tensor([kl_div, 0.1]).to(torch.device("cuda")))
 
     def _reorder_cache(
         self, past: Tuple[Tuple[torch.Tensor, torch.Tensor], ...], beam_idx: torch.LongTensor
