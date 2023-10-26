@@ -256,6 +256,10 @@ def eval_model(model, eval_dataloader, layer_attn_gates=None, layer_ffn_gates=No
         total_loss += loss
         num_batches += 1
 
+        if random.uniform(0, 1) < 0.05:
+            print("total_loss: ", total_loss)
+            print("num_batches: ", num_batches)
+
     try:
         eval_loss = total_loss / num_batches
         perplexity = math.exp(eval_loss)
@@ -464,7 +468,7 @@ def main():
                 num_proc=8,
                 remove_columns=raw_datasets["train"].column_names,
                 load_from_cache_file=True,
-                cache_file_names={k: os.path.join(data_args.dataset_name, f'tokenized_{k}.arrow') for k in raw_datasets},
+                cache_file_names={k: os.path.join(data_args.dataset_name, f'cache/tokenized_{k}.arrow') for k in raw_datasets},
                 desc="Running tokenizer on dataset",
             )
     print("tokenized_dataset: ", tokenized_dataset)
@@ -478,7 +482,7 @@ def main():
         num_proc=8,
         load_from_cache_file=True,
         keep_in_memory=False,
-        cache_file_names = {k: os.path.join(data_args.dataset_name, f'grouped_{k}.arrow') for k in tokenized_dataset},
+        cache_file_names = {k: os.path.join(data_args.dataset_name, f'cache/grouped_{k}.arrow') for k in tokenized_dataset},
         desc=f"Grouping texts in chunks of {block_size}",
     )
     lm_datasets = tokenized_dataset
@@ -735,7 +739,7 @@ def main():
                     progress_bar.update(1)
                     completed_steps += 1
 
-                    if completed_steps % training_args.eval_steps == 0 and completed_steps > 0:
+                    if completed_steps % training_args.eval_steps == 0:
                         eval_loss = eval_model(
                             model,
                             eval_dataloader,
@@ -850,7 +854,7 @@ if __name__ == "__main__":
     # GPT2-xl
     #######
     
-    CUDA_VISIBLE_DEVICES="2" nohup python -u src/gpt2/run_sft_ultrachat.py --seed 600 --dataset_name datasets/ultraChat/ --model_name_or_path resources/gpt2-xl --block_size 640 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 2 --per_device_eval_batch_size 6 --gradient_accumulation_steps 18 --num_train_epochs 10 --warmup_steps 100 --output_dir experiments/gpt2_xl_debug_0 --do_train --do_eval --eval_steps 50 --learning_rate 2e-4 --use_consistency_loss True --overwrite_output_dir > train_gpt2xl_2.log & 
+    CUDA_VISIBLE_DEVICES="3,4" nohup python -u src/gpt2/run_sft_ultrachat.py --seed 600 --dataset_name datasets/ultraChat/ --model_name_or_path resources/gpt2-xl --block_size 640 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 2 --per_device_eval_batch_size 6 --gradient_accumulation_steps 18 --num_train_epochs 10 --warmup_steps 100 --output_dir experiments/gpt2_xl_debug_0 --do_train --do_eval --eval_steps 100 --learning_rate 2e-4 --use_consistency_loss True --overwrite_output_dir > train_gpt2xl_2.log & 
     
     
     

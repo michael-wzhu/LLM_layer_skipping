@@ -11,9 +11,9 @@ if __name__ == "__main__":
     random.shuffle(list_examples)
 
     with open(f"datasets/ultraChat/train.json", "w", encoding="utf-8") as f:
-        for samp in list_examples[: -2500]:
+        for samp in list_examples[: -1500]:
             f.write(samp)
     with open(f"datasets/ultraChat/test.json", "w", encoding="utf-8") as f:
-        for samp in list_examples[-2500 : ]:
+        for samp in list_examples[-1500 : ]:
             f.write(samp)
 
