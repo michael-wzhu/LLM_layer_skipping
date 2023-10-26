@@ -842,4 +842,16 @@ if __name__ == "__main__":
     CUDA_VISIBLE_DEVICES="4" nohup python -u src/gpt2/run_sft_ultrachat.py --seed 600 --dataset_name datasets/ultraChat/ --model_name_or_path resources/gpt2-large --block_size 640 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 4 --per_device_eval_batch_size 12 --gradient_accumulation_steps 12 --num_train_epochs 10 --warmup_steps 100 --output_dir experiments/gpt2_debug_0 --do_train --do_eval --eval_steps 50 --learning_rate 2e-4 --use_consistency_loss True --overwrite_output_dir > train_2.log & 
     
     
+    
+    
+    
+    
+    #######
+    # GPT2-xl
+    #######
+    
+    CUDA_VISIBLE_DEVICES="2" nohup python -u src/gpt2/run_sft_ultrachat.py --seed 600 --dataset_name datasets/ultraChat/ --model_name_or_path resources/gpt2-xl --block_size 640 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 2 --per_device_eval_batch_size 6 --gradient_accumulation_steps 18 --num_train_epochs 10 --warmup_steps 100 --output_dir experiments/gpt2_xl_debug_0 --do_train --do_eval --eval_steps 50 --learning_rate 2e-4 --use_consistency_loss True --overwrite_output_dir > train_gpt2xl_2.log & 
+    
+    
+    
     '''
