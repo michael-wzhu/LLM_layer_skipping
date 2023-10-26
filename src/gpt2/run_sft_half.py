@@ -50,6 +50,7 @@ from transformers.utils import send_example_telemetry
 from transformers.utils.versions import require_version
 
 sys.path.append("./")
+from src.gpt2.run_sft_ultrachat import eval_model
 
 from src.gpt2.configuration_gpt2 import GPT2Config
 from src.gpt2.modeling_gpt2 import GPT2LMHeadModel
@@ -241,29 +242,29 @@ class MyTrainingArguments(TrainingArguments):
 logger = logging.getLogger(__name__)
 
 
-def eval_model(model, eval_dataloader, layer_attn_gates=None, layer_ffn_gates=None):
-    model.eval()
-    losses = []
-    total_loss = 0.0
-    num_batches = 0
-    for step, batch in tqdm(enumerate(eval_dataloader)):
-        batch["layer_attn_gates"] = layer_attn_gates
-        batch["layer_ffn_gates"] = layer_ffn_gates
-        with torch.no_grad():
-            outputs = model(**batch)
-
-        loss = outputs.loss
-        total_loss += loss
-        num_batches += 1
-
-    try:
-        eval_loss = total_loss / num_batches
-        perplexity = math.exp(eval_loss)
-    except OverflowError:
-        perplexity = float("inf")
-        eval_loss = 1000000000
-
-    return eval_loss
+# def eval_model(model, eval_dataloader, layer_attn_gates=None, layer_ffn_gates=None):
+#     model.eval()
+#     losses = []
+#     total_loss = 0.0
+#     num_batches = 0
+#     for step, batch in tqdm(enumerate(eval_dataloader)):
+#         batch["layer_attn_gates"] = layer_attn_gates
+#         batch["layer_ffn_gates"] = layer_ffn_gates
+#         with torch.no_grad():
+#             outputs = model(**batch)
+#
+#         loss = outputs.loss
+#         total_loss += loss
+#         num_batches += 1
+#
+#     try:
+#         eval_loss = total_loss / num_batches
+#         perplexity = math.exp(eval_loss)
+#     except OverflowError:
+#         perplexity = float("inf")
+#         eval_loss = 1000000000
+#
+#     return eval_loss
 
 
 def main():
@@ -501,7 +502,7 @@ def main():
                 num_proc=12,
                 remove_columns=raw_datasets["train"].column_names,
                 load_from_cache_file=True,
-                cache_file_names={k: os.path.join(data_args.dataset_name, f'tokenized_{k}.arrow') for k in raw_datasets},
+                cache_file_names={k: os.path.join(data_args.dataset_name, f'cache/tokenized_{k}.arrow') for k in raw_datasets},
                 desc="Running tokenizer on dataset",
             )
     print("tokenized_dataset: ", tokenized_dataset)
@@ -515,7 +516,7 @@ def main():
         num_proc=8,
         load_from_cache_file=True,
         keep_in_memory=False,
-        cache_file_names={k: os.path.join(data_args.dataset_name, f'grouped_{k}.arrow') for k in tokenized_dataset},
+        cache_file_names={k: os.path.join(data_args.dataset_name, f'cache/grouped_{k}.arrow') for k in tokenized_dataset},
         desc=f"Grouping texts in chunks of {block_size}",
     )
 
@@ -835,6 +836,10 @@ if __name__ == "__main__":
     '''
     # debug
     CUDA_VISIBLE_DEVICES="3" nohup python -u src/gpt2/run_sft_half.py  --dataset_name datasets/ultraChat --model_name_or_path resources/gpt2-large --block_size 640 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 1 --gradient_accumulation_steps 24 --num_train_epochs 10 --warmup_steps 100 --output_dir experiments/gpt2_debug_1 --do_train --do_eval --eval_steps 100 --learning_rate 2e-4 > train_half_0.log &
+    
+    
+    # gpt2-xl
+    CUDA_VISIBLE_DEVICES="0" nohup python -u src/gpt2/run_sft_half.py  --dataset_name datasets/ultraChat --model_name_or_path resources/gpt2-xl --block_size 640 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 2 --gradient_accumulation_steps 18 --num_train_epochs 10 --warmup_steps 100 --output_dir experiments/gpt2_xl_debug_1 --do_train --do_eval --eval_steps 100 --learning_rate 2e-4 > train_gpt2_xl_half_0.log &
     
 
     

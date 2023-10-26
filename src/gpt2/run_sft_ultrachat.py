@@ -253,10 +253,11 @@ def eval_model(model, eval_dataloader, layer_attn_gates=None, layer_ffn_gates=No
             outputs = model(**batch)
 
         loss = outputs.loss
-        total_loss += loss
+        total_loss += loss.to(torch.float32).cpu().numpy().tolist()
         num_batches += 1
 
         if random.uniform(0, 1) < 0.1:
+            print("step: ", step)
             print("loss: ", loss)
             print("total_loss: ", total_loss)
             print("num_batches: ", num_batches, " -- ")
@@ -740,7 +741,7 @@ def main():
                     progress_bar.update(1)
                     completed_steps += 1
 
-                    if completed_steps % training_args.eval_steps == 0:
+                    if completed_steps % training_args.eval_steps == 0 or completed_steps == 5:
                         eval_loss = eval_model(
                             model,
                             eval_dataloader,
