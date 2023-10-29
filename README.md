@@ -22,5 +22,7 @@ train a LM with the ability to skipping layers with less performance degradation
 skipping layer selection adaptively
 
 - method 1: learn a skipping plan for each query; 
+  - 以query为单位：接收到一个query之后，一个controller指定在生成本次response时选择哪些层早退
+  - controller组成：linear + activation + linear + activation + linear(dim num_hidden_layers)
 - method 2: learn to skip for each sentence block (seperated with \n or 句号))
 - method 2: learn to skip for each token
