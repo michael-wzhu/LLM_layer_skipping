@@ -21,8 +21,10 @@ train a LM with the ability to skipping layers with less performance degradation
 
 skipping layer selection adaptively
 
-- method 1: learn a skipping plan for each query; 
-  - 以query为单位：接收到一个query之后，一个controller指定在生成本次response时选择哪些层早退
+- method 1: Instruction-wise layer-skipping: (IWL): learn a skipping plan for each query; 
+  -  以query/instruction为单位：接收到一个query之后，一个controller指定在生成本次response时选择哪些层早退
   - controller组成：linear + activation + linear + activation + linear(dim num_hidden_layers)
+  - 在最初的实验中，先以skipping后的response句子在模型上的loss(or perlexity)作为衡量指标
+  - TODO：controller决定skipping layers之后，完整的生成句子，然后再用一个reward model去评价句子和标准答案(一般是chatgpt生成的)的差距
 - method 2: learn to skip for each sentence block (seperated with \n or 句号))
 - method 2: learn to skip for each token
