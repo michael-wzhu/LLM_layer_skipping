@@ -146,7 +146,7 @@ class Controller(torch.nn.Module):
 
         # exploration
         if self.args.mode == 'train':
-            logits = (self.args.tanh_c*F.tanh(logits))
+            logits = (self.args.tanh_c * F.tanh(logits))
 
         return logits, (hx, cx)
 
