@@ -53,7 +53,7 @@ from transformers.utils.versions import require_version
 sys.path.append("./")
 
 from src.gpt2.configuration_gpt2 import GPT2Config
-from src.gpt2_rl.modeling_gpt2 import GPT2LMHeadModel
+from src.gpt2.modeling_gpt2 import GPT2LMHeadModel
 
 os.environ["WANDB_MODE"] = "disabled"
 
@@ -233,7 +233,6 @@ class MyTrainingArguments(TrainingArguments):
 
     # search_space : Optional[str] = field(default="micro")
     #
-    #
     # # training_args.start_search_steps and completed_steps % training_args.search_every == 0 and completed_steps <= training_args.end_search_steps
     # start_search_steps: Optional[int] = field(default=500)
     # search_every: Optional[int] = field(default=200)
@@ -243,13 +242,19 @@ class MyTrainingArguments(TrainingArguments):
 logger = logging.getLogger(__name__)
 
 
-def eval_model(model, controller, eval_dataloader, config):
+def eval_rl_model(model, controller, eval_dataloader, config):
     controller.eval()
     losses = []
     total_loss = 0.0
     num_batches = 0
     for step, batch in tqdm(enumerate(eval_dataloader)):
         with torch.no_grad():
+            # TODO: 第一次，完整的前向传播，对query进行表征，用于controller进行决策
+
+            # controller进行预测, 进行action的选择
+
+            # 再一次前向传播，有layer skipping， 计算target的loss
+
             input_key = ['input_ids', 'attenion_mask', 'labels']
             batch1 = {k: batch[k] for k in input_key if k in batch}
             batch1["layer_attn_skips"] = [0] * (config.n_layer)
@@ -379,6 +384,10 @@ def main():
     def tokenize_function(example):
         # max_seq_length = 1024
 
+        query = example["query"]
+        response = example["response"]
+
+
         dialogues = example.get("data")
         # print(len(dialogues))
         assert len(dialogues) % 2 == 0
@@ -388,7 +397,7 @@ def main():
         input_ids2 = []
         labels2 = []
         for round_idx in range(int(len(dialogues) / 2)):
-            if round_idx>0:
+            if round_idx > 0:
                 continue
             query_ = dialogues[2 * round_idx]
             response_ = dialogues[2 * round_idx + 1]

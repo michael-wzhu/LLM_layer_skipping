@@ -22,23 +22,43 @@ class Controller(torch.nn.Module):
             nn.Linear(hidden_size // 2, hidden_size // 4),
             nn.Dropout(p=dropout_ratio),
             nn.GELU(),
-            nn.Linear(hidden_size // 4, num_hidden_layers * 2),
-            torch.nn.Sigmoid()
-        ) .to(torch.bfloat16)
+            nn.Linear(hidden_size // 4, num_hidden_layers * 2 * 2),
+            # torch.nn.Sigmoid()
+        )
 
     def forward(self, input_tensor,):
         logits = self.net(input_tensor)
         return logits
 
     def sample(self, input_tensor):
-        sample_prob = self.forward(input_tensor)
-        m = torch.distributions.bernoulli.Bernoulli(sample_prob)
-        selection = m.sample()
+        logits = self.forward(input_tensor)
+        logits = logits.view(-1, 2)
+        probs = F.softmax(logits, dim=-1)
+        log_probs = F.log_softmax(logits, dim=-1)
 
-        # log πθ(at|st)
-        select_loss = - (selection * torch.log(sample_prob + 1e-10) + (1 - selection) * torch.log(
-            1 - sample_prob + 1e-10))
-        return selection, select_loss
+        entropies = -(log_probs * probs).sum(-1, keepdim=False)
+
+        actions = probs.multinomial(num_samples=1).data
+        selected_log_probs = log_probs.gather(
+            1,
+            torch.Tensor(actions).cuda()
+        )
+
+
+        # m = torch.distributions.bernoulli.Bernoulli(sample_prob)
+        # selection = m.sample()
+        #
+        # # log πθ(at|st)
+        # select_loss = - (
+        #         selection * torch.log(sample_prob + 1e-10)
+        #         + (1 - selection) * torch.log(
+        #             1 - sample_prob + 1e-10
+        #         )
+        # )
+
+        return actions, selected_log_probs, entropies
+
+        # return selection, select_loss,
 
     def save_pretrained(
             self,
@@ -47,5 +67,8 @@ class Controller(torch.nn.Module):
             **kwargs,
     ):
         if is_main_process:
-            torch.save(self.state_dict(), os.path.join(save_directory, 'controller_model_parameters.pth'))
+            torch.save(self.state_dict(), os.path.join(save_directory, 'controller_model.bin'))
+
+
+# if __name__ == "__main__":
 
