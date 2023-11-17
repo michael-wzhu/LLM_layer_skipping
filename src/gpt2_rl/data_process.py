@@ -10,6 +10,9 @@ def multi_turn_to_single_turn(sample):
     id_ = sample["id"]
     data_ = sample["data"]
 
+    if "Add context and generate the detailed question" in data_[0]:
+        print(data_)
+
     num_turns = len(data_) // 2
 
     list_new_samples = []

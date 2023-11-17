@@ -50,6 +50,8 @@ from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils import send_example_telemetry
 from transformers.utils.versions import require_version
 
+from src.gpt2_rl.flops_compute import TransformerHparams
+
 sys.path.append("./")
 
 from src.gpt2.configuration_gpt2 import GPT2Config
@@ -360,6 +362,7 @@ def main():
         "use_cache": False
     }
     config = GPT2Config.from_pretrained(model_args.model_name_or_path, **config_kwargs)
+    config.use_return_dict = training_args.use_return_dict
     config.lora_rank = training_args.lora_rank
     config.lora_dropout = training_args.lora_dropout
     config.adapter_rank = training_args.adapter_rank
@@ -387,35 +390,34 @@ def main():
         query = example["query"]
         response = example["response"]
 
-
-        dialogues = example.get("data")
-        # print(len(dialogues))
-        assert len(dialogues) % 2 == 0
-
         input_ids = []
         labels = []
         input_ids2 = []
         labels2 = []
-        for round_idx in range(int(len(dialogues) / 2)):
-            if round_idx > 0:
-                continue
-            query_ = dialogues[2 * round_idx]
-            response_ = dialogues[2 * round_idx + 1]
 
-            input_1 = f"<|endoftext|>user:\n{query_}\n"
-            input_2 = f"<|endoftext|>assistant:\n{response_}<|endoftext|>"
-            input_ids_1 = tokenizer(input_1, return_tensors="pt")["input_ids"].cpu().numpy().tolist()[0]
-            input_ids_2 = tokenizer(input_2, return_tensors="pt")["input_ids"].cpu().numpy().tolist()[0]
+        input_1 = f"{query}"
+        input_2 = f"{response}"
+        input_ids_1 = tokenizer(input_1, return_tensors="pt")["input_ids"].cpu().numpy().tolist()[0]
+        input_ids_2 = tokenizer(input_2, return_tensors="pt")["input_ids"].cpu().numpy().tolist()[0]
 
-            input_ids.extend(input_ids_1)
-            labels.extend(input_ids_1)
-            input_ids2.extend(input_ids_1 + input_ids_2)
-            labels2.extend(input_ids_1 + input_ids_2)
+        # 处理过长的样本
+        target_length = min(len(input_ids_2), block_size - 128)
+        query_length = block_size - target_length
+        input_ids.extend(input_ids_1[-query_length:])
+        labels.extend([-100] * len(input_ids_1[-query_length:]))
+        input_ids2.extend(input_ids_1[-query_length:] + input_ids_2[: target_length])
+        labels2.extend([-100] * len(input_ids_1[-query_length:]) + input_ids_2[: target_length])
+
+        input_ids.extend(input_ids_1)
+        labels.extend([-100] * len(input_ids_1))
+        input_ids2.extend(input_ids_1 + input_ids_2)
+        labels2.extend([-100] * len(input_ids_1) + input_ids_2)
 
         attention_mask = [1] * len(input_ids)
         attention_mask2 = [1] * len(input_ids2)
 
         assert len(input_ids) == len(labels) == len(attention_mask)
+        assert len(input_ids2) == len(labels2) == len(attention_mask2)
         # print("length of input_ids: ", len(input_ids))
         return {
             "input_ids": input_ids,
@@ -424,6 +426,7 @@ def main():
             "input_ids2": input_ids2,
             "attention_mask2": attention_mask2,
             "labels2": labels2,
+            "target_length": target_length,
         }
 
     if data_args.block_size is None:
@@ -443,30 +446,30 @@ def main():
             )
         block_size = min(data_args.block_size, tokenizer.model_max_length)
 
-    def group_texts(examples):
-        # Concatenate all texts.
-        concatenated_examples = {k: list(chain(*examples[k])) for k in examples.keys()}
-        total_length = len(concatenated_examples["input_ids"])
-
-        # We drop the small remainder, we could add padding if the model supported it instead of this drop, you can
-        # customize this part to your needs.
-        if total_length >= block_size:
-            total_length = (total_length // block_size + 1) * block_size
-        # Split by chunks of max_len.
-        result = {}
-        for k, t in concatenated_examples.items():
-            if total_length > len(t):
-                if "input_ids" in k:
-                    t = t + [tokenizer.eos_token_id] * (total_length - len(t))
-                elif "attention_mask" in k:
-                    t = t + [0] * (total_length - len(t))
-                else:
-                    t = t + [-100] * (total_length - len(t))
-
-            truncs = [t[i: i + block_size] for i in range(0, total_length, block_size)]
-            result[k] = truncs
-
-        return result
+    # def group_texts(examples):
+    #     # Concatenate all texts.
+    #     concatenated_examples = {k: list(chain(*examples[k])) for k in examples.keys()}
+    #     total_length = len(concatenated_examples["input_ids"])
+    #
+    #     # We drop the small remainder, we could add padding if the model supported it instead of this drop, you can
+    #     # customize this part to your needs.
+    #     if total_length >= block_size:
+    #         total_length = (total_length // block_size + 1) * block_size
+    #     # Split by chunks of max_len.
+    #     result = {}
+    #     for k, t in concatenated_examples.items():
+    #         if total_length > len(t):
+    #             if "input_ids" in k:
+    #                 t = t + [tokenizer.eos_token_id] * (total_length - len(t))
+    #             elif "attention_mask" in k:
+    #                 t = t + [0] * (total_length - len(t))
+    #             else:
+    #                 t = t + [-100] * (total_length - len(t))
+    #
+    #         truncs = [t[i: i + block_size] for i in range(0, total_length, block_size)]
+    #         result[k] = truncs
+    #
+    #     return result
 
     # with training_args.main_process_first(desc="dataset map tokenization and grouping"):
     raw_datasets = load_dataset(
@@ -492,16 +495,16 @@ def main():
     print(tokenized_dataset["train"][3]['input_ids'])
     print(tokenized_dataset["train"][3]['labels'])
 
-    tokenized_dataset = tokenized_dataset.map(
-        group_texts,
-        batched=True,
-        # batch_size=1024,
-        num_proc=8,
-        load_from_cache_file=True,
-        keep_in_memory=False,
-        cache_file_names={k: os.path.join(data_args.dataset_name, f'grouped_{k}.arrow') for k in tokenized_dataset},
-        desc=f"Grouping texts in chunks of {block_size}",
-    )
+    # tokenized_dataset = tokenized_dataset.map(
+    #     group_texts,
+    #     batched=True,
+    #     # batch_size=1024,
+    #     num_proc=8,
+    #     load_from_cache_file=True,
+    #     keep_in_memory=False,
+    #     cache_file_names={k: os.path.join(data_args.dataset_name, f'grouped_{k}.arrow') for k in tokenized_dataset},
+    #     desc=f"Grouping texts in chunks of {block_size}",
+    # )
     lm_datasets = tokenized_dataset
 
     # lm_datasets = tokenized_dataset["train"].train_test_split(test_size=0.02)
@@ -549,7 +552,7 @@ def main():
         torch_dtype=torch.bfloat16,
     )
 
-    controller = Controller(config.n_embd, config.n_layer).to("cuda")
+    controller = Controller(config.n_embd, config.num_hidden_layers).to("cuda")
 
     data_collator = DataCollatorForSeq2Seq(
         tokenizer,
@@ -565,13 +568,6 @@ def main():
     )
     eval_dataloader = DataLoader(
         eval_dataset, collate_fn=data_collator, batch_size=training_args.per_device_eval_batch_size
-    )
-
-    eval_indices = list(range(len(eval_dataset)))
-    random.shuffle(eval_indices)
-    valid_dataset = eval_dataset.select(eval_indices[: 16])
-    valid_dataloader = DataLoader(
-        valid_dataset, collate_fn=data_collator, batch_size=training_args.per_device_eval_batch_size
     )
 
     # Optimizer
@@ -624,8 +620,8 @@ def main():
         transformers.utils.logging.set_verbosity_error()
 
     # Prepare everything with our `accelerator`.
-    model, controller, optimizer, train_dataloader, eval_dataloader, valid_dataloader, lr_scheduler = accelerator.prepare(
-        model, controller, optimizer, train_dataloader, eval_dataloader, valid_dataloader, lr_scheduler
+    model, controller, optimizer, train_dataloader, eval_dataloader, lr_scheduler = accelerator.prepare(
+        model, controller, optimizer, train_dataloader, eval_dataloader, lr_scheduler
     )
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
@@ -677,6 +673,10 @@ def main():
         best_steps = None
         best_steps_full_model = None
         patience = 15
+
+        # for REINFORCE
+        baseline = None
+        reward_history = []
         for epoch in range(starting_epoch, training_args.num_train_epochs):
 
             total_loss = 0
@@ -685,10 +685,92 @@ def main():
                 model.train()
                 controller.train()
                 with accelerator.accumulate(controller):
-                    input_key = ['input_ids', 'attenion_mask', 'labels']
-                    batch1 = {k: batch[k] for k in input_key if k in batch}
-                    batch1["layer_attn_skips"] = [0]*config.n_layer
-                    batch1["layer_ffn_skips"] = [0]*config.n_layer
+
+                    # query 先过一遍前向传播，得到hidden_states
+                    batch_cur = {
+                        "input_ids": batch["input_ids"],
+                        "attention_mask": batch["attention_mask"],
+                        "labels": batch["labels"],
+                    }
+                    batch_cur["layer_attn_gates"] = [1] * config.num_hidden_layers
+                    batch_cur["layer_ffn_gates"] = [1] * config.num_hidden_layers
+                    batch_cur["return_dict"] = True
+
+                    with torch.no_grad():
+                        out = model(**batch_cur)
+                        query_hidden_states = out.hidden_states
+
+                    # controller 采样一组action:
+                    actions, selected_log_probs, controller_entropies = controller.sample(
+                        query_hidden_states
+                    )
+
+                    # 计算reward：
+                    #    (1) 根据选择的actions，构造 layer_attn_gates， layer_ffn_gates
+                    #    (2) 计算样本在有skipping下的损失; 节省的复杂度
+                    #    (3) reward 组成： LM没有skipping的损失: A1; 在sample的action下面的skipping后损失函数: A2； 选择保留的层的复杂度: B
+                    #                      - (A1-A2) + (-B)
+
+                    # 没有skipping情况下的损失计算
+                    batch_cur = {
+                        "input_ids": batch["input_ids2"],
+                        "attention_mask": batch["attention_mask2"],
+                        "labels": batch["labels2"],
+                    }
+                    batch_cur["layer_attn_gates"] = [1] * config.num_hidden_layers
+                    batch_cur["layer_ffn_gates"] = [1] * config.num_hidden_layers
+                    batch_cur["return_dict"] = True
+
+                    with torch.no_grad():
+                        out = model(**batch_cur)
+                        loss_no_skipping = out.loss
+
+                    # 可以采样多次轨迹
+                    list_slipping_losses = []
+                    list_actions = []
+                    list_rewards = []
+                    for i in range(3):
+                        actions, selected_log_probs, controller_entropies = controller.sample(
+                            query_hidden_states
+                        )
+                        layer_attn_gates = actions[0::2].cpu().numpy().tolist()
+                        layer_ffn_gates = actions[1::2].cpu().numpy().tolist()
+
+                        batch_cur = {
+                            "input_ids": batch["input_ids2"],
+                            "attention_mask": batch["attention_mask2"],
+                            "labels": batch["labels2"],
+                        }
+                        batch_cur["layer_attn_gates"] = layer_attn_gates
+                        batch_cur["layer_ffn_gates"] = layer_ffn_gates
+                        batch_cur["return_dict"] = True
+
+                        with torch.no_grad():
+                            out = model(**batch_cur)
+                            loss_skipping_1 = out.loss
+                            list_slipping_losses.append(loss_skipping_1)
+
+                        # 计算reward
+                        loss_delta = loss_skipping_1 - loss_no_skipping
+
+                        gpt2_calc = TransformerHparams(
+                            config.hidden_size, config.num_hidden_layers,
+                            s=128, v=config.vocab_size, output_frac=1.0
+                        )
+                        attn_flops = gpt2_calc.get_attn_flops()
+                        ffn_flops = gpt2_calc.get_ffn_flops()
+                        complexity_saved_attn = (config.num_hidden_layers - sum(layer_attn_gates)) * attn_flops
+                        complexity_saved_ffn = (config.num_hidden_layers - sum(layer_ffn_gates)) * ffn_flops
+                        complexity_saved = complexity_saved_attn + complexity_saved_ffn
+
+                        reward_ = loss_delta + training_args.efficiency_coef * complexity_saved
+
+
+
+
+
+
+
 
                     initial_hidden_states = model.get_initial_hidden_states(**batch1)
                     bsz = initial_hidden_states.shape[0]

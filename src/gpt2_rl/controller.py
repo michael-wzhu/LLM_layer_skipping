@@ -16,15 +16,17 @@ class Controller(torch.nn.Module):
                  dropout_ratio=0.1,):
         super(Controller, self).__init__()
         self.net = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size // 2),
+            nn.Linear(hidden_size, hidden_size // 1),
             nn.Dropout(p=dropout_ratio),
-            nn.GELU(),
-            nn.Linear(hidden_size // 2, hidden_size // 4),
+            nn.Tanh(),
+            nn.Linear(hidden_size // 1, hidden_size // 2),
             nn.Dropout(p=dropout_ratio),
-            nn.GELU(),
-            nn.Linear(hidden_size // 4, num_hidden_layers * 2 * 2),
+            nn.Tanh(),
+            nn.Linear(hidden_size // 2, num_hidden_layers * 2 * 2),
             # torch.nn.Sigmoid()
         )
+
+        self.temperature = 0.5
 
     def forward(self, input_tensor,):
         logits = self.net(input_tensor)
@@ -33,7 +35,7 @@ class Controller(torch.nn.Module):
     def sample(self, input_tensor):
         logits = self.forward(input_tensor)
         logits = logits.view(-1, 2)
-        probs = F.softmax(logits, dim=-1)
+        probs = F.softmax(logits / self.temperature, dim=-1)
         log_probs = F.log_softmax(logits, dim=-1)
 
         entropies = -(log_probs * probs).sum(-1, keepdim=False)
@@ -41,7 +43,7 @@ class Controller(torch.nn.Module):
         actions = probs.multinomial(num_samples=1).data
         selected_log_probs = log_probs.gather(
             1,
-            torch.Tensor(actions).cuda()
+            actions.cuda()
         )
 
 
