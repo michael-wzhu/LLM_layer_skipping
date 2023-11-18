@@ -75,7 +75,7 @@ class TransformerHparams(object):
             attn_output_residual=self.h * attn_mul,
             attn_output_layer_norm=LAYER_NORM_FLOPS * attn_mul,
         )
-        print(attn_flops)
+        # print(attn_flops)
         return sum(attn_flops.values()) * self.s
 
     def get_ffn_flops(self):
@@ -91,7 +91,7 @@ class TransformerHparams(object):
             output_residual=self.h,
             output_layer_norm=LAYER_NORM_FLOPS * self.h,
         )
-        print(ffn_flops)
+        # print(ffn_flops)
         return sum(ffn_flops.values()) * self.s
 
     def get_block_flops(self):
@@ -119,7 +119,7 @@ class TransformerHparams(object):
             output_residual=self.h,
             output_layer_norm=LAYER_NORM_FLOPS * self.h,
         )
-        print(block_flops)
+        # print(block_flops)
         return sum(block_flops.values()) * self.s
 
     def get_embedding_flops(self, output=False):
