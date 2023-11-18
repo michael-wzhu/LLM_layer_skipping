@@ -622,6 +622,12 @@ def main():
         num_warmup_steps=training_args.warmup_steps * training_args.gradient_accumulation_steps,
         num_training_steps=training_args.max_train_steps * training_args.gradient_accumulation_steps,
     )
+    controller_lr_scheduler = get_scheduler(
+        name=training_args.lr_scheduler_type,
+        optimizer=controller_optimizer,
+        num_warmup_steps=training_args.warmup_steps * training_args.gradient_accumulation_steps,
+        num_training_steps=training_args.max_train_steps * training_args.gradient_accumulation_steps,
+    )
 
     # accelerator
     accelerator_log_kwargs = {}
@@ -639,8 +645,8 @@ def main():
         transformers.utils.logging.set_verbosity_error()
 
     # Prepare everything with our `accelerator`.
-    model, controller, optimizer, controller_optimizer, train_dataloader, eval_dataloader, lr_scheduler = accelerator.prepare(
-        model, controller, optimizer, controller_optimizer, train_dataloader, eval_dataloader, lr_scheduler
+    model, controller, optimizer, controller_optimizer, train_dataloader, eval_dataloader, lr_scheduler, controller_lr_scheduler = accelerator.prepare(
+        model, controller, optimizer, controller_optimizer, train_dataloader, eval_dataloader, lr_scheduler, controller_lr_scheduler
     )
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
@@ -752,11 +758,9 @@ def main():
                     actions, selected_log_probs, controller_entropies = controller.sample(
                         query_hidden_states
                     )
-                    print("controller_entropies: ", controller_entropies)
                     layer_attn_gates = actions[0::2]
                     layer_ffn_gates = actions[1::2]
-                    print("layer_attn_gates: ", layer_attn_gates)
-                    print("layer_ffn_gates: ", layer_ffn_gates)
+
 
                     batch_cur = {
                         "input_ids": batch["input_ids2"],
@@ -788,11 +792,8 @@ def main():
                     # print("complexity_saved: ", complexity_saved)
                     # print("complexity_whole: ", complexity_whole)
 
-                    print("loss_delta: ", loss_delta)
-                    print("complexity_saved / complexity_whole: ", complexity_saved / complexity_whole)
                     reward_ = loss_delta + training_args.efficiency_coef * complexity_saved / complexity_whole
 
-                    print("reward_: ", reward_)
                     reward_history.append(reward_)
 
                     # moving average baseline
@@ -807,14 +808,24 @@ def main():
 
                     # policy loss
                     loss = - selected_log_probs * Variable(torch.Tensor(adv).cuda())
-                    print("adv: ", adv)
                     loss = loss.mean()  # or loss.mean()
-                    print("loss: ", loss)
+
+                    if random.uniform(0, 1) < 0.05:
+                        print("actions: ", actions)
+                        print("controller_entropies: ", controller_entropies)
+                        print("layer_attn_gates: ", layer_attn_gates)
+                        print("layer_ffn_gates: ", layer_ffn_gates)
+                        print("loss_delta: ", loss_delta)
+                        print("complexity_saved / complexity_whole: ", complexity_saved / complexity_whole)
+                        print("reward_: ", reward_)
+                        print("adv: ", adv)
+                        print("loss: ", loss)
 
                     loss.backward()
 
                 torch.nn.utils.clip_grad_norm(controller.parameters(), 1.0)
                 controller_optimizer.step()
+                controller_lr_scheduler.step()
 
                 progress_bar.update(1)
                 completed_steps += 1
@@ -914,6 +925,6 @@ if __name__ == "__main__":
     
     
     # gpt2-large
-    CUDA_VISIBLE_DEVICES="0" python -u src/gpt2_rl/run_reinforce_IWL.py --seed 600 --dataset_name datasets/ultraChat/flat_format --model_name_or_path ./experiments/gpt2_debug_0 --block_size 1024 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 1 --per_device_eval_batch_size 4 --gradient_accumulation_steps 8 --num_train_epochs 10 --warmup_steps 100 --output_dir experiments/iwl_gpt2_debug_0 --do_train --do_eval --eval_steps 10000 --learning_rate 2e-4 --overwrite_output_dir 
+    CUDA_VISIBLE_DEVICES="0" nohup python -u src/gpt2_rl/run_reinforce_IWL.py --seed 600 --dataset_name datasets/ultraChat/flat_format --model_name_or_path ./experiments/gpt2_debug_0 --block_size 1024 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 1 --per_device_eval_batch_size 4 --gradient_accumulation_steps 8 --num_train_epochs 10 --warmup_steps 1000 --output_dir experiments/iwl_gpt2_debug_0 --do_train --do_eval --eval_steps 10000 --learning_rate 2e-5 --overwrite_output_dir > iwl_gpt2_debug_0.log &
     
     """
