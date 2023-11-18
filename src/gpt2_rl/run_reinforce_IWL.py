@@ -748,7 +748,7 @@ def main():
                 list_rewards = []
 
                 controller_optimizer.zero_grad()
-                for i in range(training_args.gradient_accumulation_steps):
+                for i in range(1):
                     actions, selected_log_probs, controller_entropies = controller.sample(
                         query_hidden_states
                     )
@@ -914,6 +914,6 @@ if __name__ == "__main__":
     
     
     # gpt2-large
-    CUDA_VISIBLE_DEVICES="0" python -u src/gpt2_rl/run_reinforce_IWL.py --seed 600 --dataset_name datasets/ultraChat/flat_format --model_name_or_path ./experiments/gpt2_debug_0 --block_size 1024 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 1 --per_device_eval_batch_size 4 --gradient_accumulation_steps 8 --num_train_epochs 10 --warmup_steps 100 --output_dir experiments/iwl_gpt2_debug_0 --do_train --do_eval --eval_steps 2000 --learning_rate 2e-4 --overwrite_output_dir 
+    CUDA_VISIBLE_DEVICES="0" python -u src/gpt2_rl/run_reinforce_IWL.py --seed 600 --dataset_name datasets/ultraChat/flat_format --model_name_or_path ./experiments/gpt2_debug_0 --block_size 1024 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 1 --per_device_eval_batch_size 4 --gradient_accumulation_steps 8 --num_train_epochs 10 --warmup_steps 100 --output_dir experiments/iwl_gpt2_debug_0 --do_train --do_eval --eval_steps 10000 --learning_rate 2e-4 --overwrite_output_dir 
     
     """

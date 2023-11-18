@@ -18,7 +18,7 @@ class Controller(torch.nn.Module):
         self.net = nn.Sequential(
             nn.Linear(hidden_size * 9, hidden_size * 2),
             nn.Dropout(p=dropout_ratio),
-            nn.Tanh(),
+            nn.GELU(),
             nn.Linear(hidden_size * 2, hidden_size // 2),
             nn.Dropout(p=dropout_ratio),
             nn.GELU(),
@@ -26,7 +26,7 @@ class Controller(torch.nn.Module):
             # torch.nn.Sigmoid()
         )
 
-        self.temperature = 2.0
+        self.temperature = 1.0
 
         # pooler
         self.adap_pooler_1 = nn.AdaptiveAvgPool1d(4)
