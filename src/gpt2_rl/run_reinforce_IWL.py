@@ -236,7 +236,7 @@ class MyTrainingArguments(TrainingArguments):
 
     efficiency_coef: Optional[float] = field(default=2.0)
     entropy_coeff: Optional[float] = field(default=0.2)
-    ema_baseline_decay: Optional[float] = field(default=0.92)
+    ema_baseline_decay: Optional[float] = field(default=0.96)
     use_return_dict: Optional[bool] = field(default=True)
 
     # search_space : Optional[str] = field(default="micro")
@@ -255,47 +255,86 @@ def eval_rl_model(model, controller, eval_dataloader, config):
     losses = []
     total_loss = 0.0
     num_batches = 0
-    for step, batch in tqdm(enumerate(eval_dataloader)):
+    for step, batch in enumerate(eval_dataloader):
+        model.eval()
+
+        # query 先过一遍前向传播，得到hidden_states
+        batch_cur = {
+            "input_ids": batch["input_ids"],
+            "attention_mask": batch["attention_mask"],
+            "labels": batch["labels"],
+        }
+        batch_cur["layer_attn_gates"] = [1] * config.num_hidden_layers
+        batch_cur["layer_ffn_gates"] = [1] * config.num_hidden_layers
+        batch_cur["return_dict"] = True
+
         with torch.no_grad():
-            # TODO: 第一次，完整的前向传播，对query进行表征，用于controller进行决策
+            out = model(**batch_cur)
+            query_hidden_states = out.hidden_states
 
-            # controller进行预测, 进行action的选择
+        # print("query_hidden_states: ", query_hidden_states.shape)
 
-            # 再一次前向传播，有layer skipping， 计算target的loss
+        # 计算reward：
+        #    (1) 根据选择的actions，构造 layer_attn_gates， layer_ffn_gates
+        #    (2) 计算样本在有skipping下的损失; 节省的复杂度
+        #    (3) reward 组成： LM没有skipping的损失: A1; 在sample的action下面的skipping后损失函数: A2； 选择保留的层的复杂度: B
+        #                      - (A1-A2) + (-B)
 
-            input_key = ['input_ids', 'attenion_mask', 'labels']
-            batch1 = {k: batch[k] for k in input_key if k in batch}
-            batch1["layer_attn_skips"] = [0] * (config.n_layer)
-            batch1["layer_ffn_skips"] = [0] * (config.n_layer)
+        # 没有skipping情况下的损失计算
+        batch_cur = {
+            "input_ids": batch["input_ids2"],
+            "attention_mask": batch["attention_mask2"],
+            "labels": batch["labels2"],
+        }
+        batch_cur["layer_attn_gates"] = [1] * config.num_hidden_layers
+        batch_cur["layer_ffn_gates"] = [1] * config.num_hidden_layers
+        batch_cur["return_dict"] = True
 
-            outputs = model(**batch1)
-            hidden_states = outputs.hidden_states
-            bsz = hidden_states.shape[0]
-            sample_res, select_loss = controller.sample(hidden_states[:, -1, :])
-            batch2 = {}
-            batch2['input_ids'] = batch['input_ids2']
-            batch2['attention_mask'] = batch['attention_mask2']
-            batch2['labels'] = batch['labels2']
-            sample_res = (torch.sum(sample_res.int(), 0) > int(0.5 * bsz)).int().tolist()
-            batch2["layer_attn_skips"] = sample_res[0::2]
-            batch2["layer_ffn_skips"] = sample_res[1::2]
+        with torch.no_grad():
+            out = model(**batch_cur)
+            loss_no_skipping = out.loss
+        # print("loss_no_skipping: ", loss_no_skipping)
 
-            outputs2 = model(**batch2)
-            cross_entropy = outputs2.loss
-            skiped_layers = sum(sample_res)
-            rewards = []
-            for bs in range(bsz):
-                rewards.append(-cross_entropy[bs].item() + skiped_layers)
-            rs = np.array(rewards)
-            baseline = np.mean(rs)
-            policy_loss = 0
-            for i in range(bsz):
-                r = rewards[i] - baseline
-                policy_loss += r * torch.mean(select_loss[i])
-            loss = policy_loss
+        # 可以采样多次轨迹
+        list_slipping_losses = []
+        list_actions = []
+        list_rewards = []
 
-        total_loss += loss.item()
-        num_batches += 1
+        controller_optimizer.zero_grad()
+        for i in range(1):
+            actions, selected_log_probs, controller_entropies = controller.sample(
+                query_hidden_states
+            )
+            layer_attn_gates = actions[0::2]
+            layer_ffn_gates = actions[1::2]
+
+            batch_cur = {
+                "input_ids": batch["input_ids2"],
+                "attention_mask": batch["attention_mask2"],
+                "labels": batch["labels2"],
+            }
+            batch_cur["layer_attn_gates"] = layer_attn_gates
+            batch_cur["layer_ffn_gates"] = layer_ffn_gates
+            batch_cur["return_dict"] = True
+
+            with torch.no_grad():
+                out = model(**batch_cur)
+                loss_skipping_1 = out.loss
+                list_slipping_losses.append(loss_skipping_1)
+
+            # 计算reward
+            loss_delta = - (loss_skipping_1 - loss_no_skipping)
+
+            gpt2_calc = TransformerHparams(
+                config.hidden_size, config.num_hidden_layers,
+                s=128, v=config.vocab_size, output_frac=1.0
+            )
+            attn_flops = gpt2_calc.get_attn_flops()
+            ffn_flops = gpt2_calc.get_ffn_flops()
+            complexity_saved_attn = (config.num_hidden_layers - sum(layer_attn_gates)) * attn_flops
+            complexity_saved_ffn = (config.num_hidden_layers - sum(layer_ffn_gates)) * ffn_flops
+            complexity_saved = complexity_saved_attn + complexity_saved_ffn
+            complexity_whole = config.num_hidden_layers * (attn_flops + ffn_flops)
 
     try:
         eval_loss = total_loss / num_batches
@@ -808,9 +847,9 @@ def main():
                     adv_history.append(adv)
 
                     # policy loss
-                    loss = - selected_log_probs * Variable(torch.Tensor(adv).cuda())
+                    loss = - selected_log_probs* Variable(torch.Tensor(adv).cuda())
                     loss = loss.mean()  # or loss.mean()
-                    # loss -= training_args.entropy_coeff * controller_entropies.mean()
+                    loss -= training_args.entropy_coeff * controller_entropies.mean()
 
                     if random.uniform(0, 1) < 0.05:
                         print("actions: ", actions)
@@ -929,6 +968,6 @@ if __name__ == "__main__":
     
     
     # gpt2-large
-    CUDA_VISIBLE_DEVICES="0" nohup python -u src/gpt2_rl/run_reinforce_IWL.py --seed 600 --dataset_name datasets/ultraChat/flat_format --model_name_or_path ./experiments/gpt2_debug_0 --block_size 1024 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 1 --per_device_eval_batch_size 4 --gradient_accumulation_steps 1 --num_train_epochs 10 --warmup_steps 1000 --output_dir experiments/iwl_gpt2_debug_0 --do_train --do_eval --eval_steps 100000 --learning_rate 2e-4 --overwrite_output_dir > iwl_gpt2_debug_0.log &
+    CUDA_VISIBLE_DEVICES="2" nohup python -u src/gpt2_rl/run_reinforce_IWL.py --seed 600 --dataset_name datasets/ultraChat/flat_format --model_name_or_path ./experiments/gpt2_debug_0 --block_size 1024 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 1 --per_device_eval_batch_size 4 --gradient_accumulation_steps 1 --num_train_epochs 10 --warmup_steps 1000 --output_dir experiments/iwl_gpt2_debug_0 --do_train --do_eval --eval_steps 100000 --learning_rate 2e-4 --overwrite_output_dir > iwl_gpt2_debug_0.log &
     
     """

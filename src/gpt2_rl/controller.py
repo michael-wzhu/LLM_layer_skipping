@@ -4,6 +4,7 @@
 
 import collections
 import os
+import random
 
 import torch
 import torch.nn as nn
@@ -54,7 +55,8 @@ class Controller(torch.nn.Module):
 
         # increase exploration
         # logits = F.tanh(logits)
-        logits = logits + 0.02 * torch.randn(logits.shape).cuda()
+        if random.uniform(0, 1) < 0.01:
+            logits = logits + 0.01 * torch.randn(logits.shape).cuda()
 
         probs = F.softmax(logits / self.temperature, dim=-1)
         log_probs = F.log_softmax(logits / self.temperature, dim=-1)
