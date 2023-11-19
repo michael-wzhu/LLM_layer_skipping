@@ -810,7 +810,7 @@ def main():
                     # policy loss
                     loss = - selected_log_probs * Variable(torch.Tensor(adv).cuda())
                     loss = loss.mean()  # or loss.mean()
-                    loss -= training_args.entropy_coeff * controller_entropies.mean()
+                    # loss -= training_args.entropy_coeff * controller_entropies.mean()
 
                     if random.uniform(0, 1) < 0.05:
                         print("actions: ", actions)
