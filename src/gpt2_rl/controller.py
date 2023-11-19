@@ -16,17 +16,17 @@ class Controller(torch.nn.Module):
                  dropout_ratio=0.1,):
         super(Controller, self).__init__()
         self.net = nn.Sequential(
-            nn.Linear(hidden_size * 9, hidden_size * 2),
-            nn.Dropout(p=dropout_ratio),
-            nn.Tanh(),
-            nn.Linear(hidden_size * 2, hidden_size // 2),
+            nn.Linear(hidden_size * 9, hidden_size * 9),
             nn.Dropout(p=dropout_ratio),
             nn.ReLU(),
-            nn.Linear(hidden_size // 2, num_hidden_layers * 2 * 2),
+            nn.Linear(hidden_size * 9, hidden_size *2),
+            nn.Dropout(p=dropout_ratio),
+            nn.ReLU(),
+            nn.Linear(hidden_size * 2, num_hidden_layers * 2 * 2),
             # torch.nn.Sigmoid()
         )
 
-        self.temperature = 2
+        self.temperature = 2.0
 
         # pooler
         self.adap_pooler_1 = nn.AdaptiveAvgPool1d(4)
@@ -51,8 +51,13 @@ class Controller(torch.nn.Module):
     def sample(self, input_tensor):
         logits = self(input_tensor)
         logits = logits.view(-1, 2)
+
+        # increase exploration
+        # logits = F.tanh(logits)
+        logits = logits + 0.02 * torch.randn(logits.shape).cuda()
+
         probs = F.softmax(logits / self.temperature, dim=-1)
-        log_probs = F.log_softmax(logits, dim=-1)
+        log_probs = F.log_softmax(logits / self.temperature, dim=-1)
 
         entropies = -(log_probs * probs).sum(-1, keepdim=False)
 

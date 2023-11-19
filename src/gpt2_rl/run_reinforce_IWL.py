@@ -234,8 +234,9 @@ class MyTrainingArguments(TrainingArguments):
     eval_steps: Optional[int] = field(default=100)
     learning_rate: Optional[float] = field(default=5e-5)
 
-    efficiency_coef: Optional[float] = field(default=2.5)
-    ema_baseline_decay: Optional[float] = field(default=0.95)
+    efficiency_coef: Optional[float] = field(default=2.0)
+    entropy_coeff: Optional[float] = field(default=0.2)
+    ema_baseline_decay: Optional[float] = field(default=0.92)
     use_return_dict: Optional[bool] = field(default=True)
 
     # search_space : Optional[str] = field(default="micro")
@@ -809,15 +810,18 @@ def main():
                     # policy loss
                     loss = - selected_log_probs * Variable(torch.Tensor(adv).cuda())
                     loss = loss.mean()  # or loss.mean()
+                    loss -= training_args.entropy_coeff * controller_entropies.mean()
 
                     if random.uniform(0, 1) < 0.05:
                         print("actions: ", actions)
                         print("controller_entropies: ", controller_entropies)
+                        print("controller_entropies mean: ", controller_entropies.mean())
                         print("layer_attn_gates: ", layer_attn_gates)
                         print("layer_ffn_gates: ", layer_ffn_gates)
                         print("loss_delta: ", loss_delta)
                         print("complexity_saved / complexity_whole: ", complexity_saved / complexity_whole)
                         print("reward_: ", reward_)
+                        print("baseline: ", baseline)
                         print("adv: ", adv)
                         print("loss: ", loss)
 
@@ -925,6 +929,6 @@ if __name__ == "__main__":
     
     
     # gpt2-large
-    CUDA_VISIBLE_DEVICES="0" nohup python -u src/gpt2_rl/run_reinforce_IWL.py --seed 600 --dataset_name datasets/ultraChat/flat_format --model_name_or_path ./experiments/gpt2_debug_0 --block_size 1024 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 1 --per_device_eval_batch_size 4 --gradient_accumulation_steps 8 --num_train_epochs 10 --warmup_steps 1000 --output_dir experiments/iwl_gpt2_debug_0 --do_train --do_eval --eval_steps 10000 --learning_rate 2e-5 --overwrite_output_dir > iwl_gpt2_debug_0.log &
+    CUDA_VISIBLE_DEVICES="0" nohup python -u src/gpt2_rl/run_reinforce_IWL.py --seed 600 --dataset_name datasets/ultraChat/flat_format --model_name_or_path ./experiments/gpt2_debug_0 --block_size 1024 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 1 --per_device_eval_batch_size 4 --gradient_accumulation_steps 1 --num_train_epochs 10 --warmup_steps 1000 --output_dir experiments/iwl_gpt2_debug_0 --do_train --do_eval --eval_steps 100000 --learning_rate 2e-4 --overwrite_output_dir > iwl_gpt2_debug_0.log &
     
     """
