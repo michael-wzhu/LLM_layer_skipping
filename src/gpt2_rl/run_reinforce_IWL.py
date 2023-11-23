@@ -235,7 +235,7 @@ class MyTrainingArguments(TrainingArguments):
     learning_rate: Optional[float] = field(default=5e-5)
 
     efficiency_coef: Optional[float] = field(default=2.0)
-    entropy_coeff: Optional[float] = field(default=0.2)
+    entropy_coeff: Optional[float] = field(default=0.1)
     ema_baseline_decay: Optional[float] = field(default=0.96)
     use_return_dict: Optional[bool] = field(default=True)
 
@@ -251,12 +251,16 @@ logger = logging.getLogger(__name__)
 
 
 def eval_rl_model(model, controller, eval_dataloader, config):
+    model.eval()
     controller.eval()
     losses = []
-    total_loss = 0.0
+    total_loss_gaps = 0.0
     num_batches = 0
-    for step, batch in enumerate(eval_dataloader):
+    for step, batch in tqdm(enumerate(eval_dataloader)):
         model.eval()
+        num_batches += 1
+
+        # TODO: 先做batch size = 1的情况，然后再做batch的情况
 
         # query 先过一遍前向传播，得到hidden_states
         batch_cur = {
@@ -272,14 +276,6 @@ def eval_rl_model(model, controller, eval_dataloader, config):
             out = model(**batch_cur)
             query_hidden_states = out.hidden_states
 
-        # print("query_hidden_states: ", query_hidden_states.shape)
-
-        # 计算reward：
-        #    (1) 根据选择的actions，构造 layer_attn_gates， layer_ffn_gates
-        #    (2) 计算样本在有skipping下的损失; 节省的复杂度
-        #    (3) reward 组成： LM没有skipping的损失: A1; 在sample的action下面的skipping后损失函数: A2； 选择保留的层的复杂度: B
-        #                      - (A1-A2) + (-B)
-
         # 没有skipping情况下的损失计算
         batch_cur = {
             "input_ids": batch["input_ids2"],
@@ -289,24 +285,25 @@ def eval_rl_model(model, controller, eval_dataloader, config):
         batch_cur["layer_attn_gates"] = [1] * config.num_hidden_layers
         batch_cur["layer_ffn_gates"] = [1] * config.num_hidden_layers
         batch_cur["return_dict"] = True
-
         with torch.no_grad():
             out = model(**batch_cur)
             loss_no_skipping = out.loss
-        # print("loss_no_skipping: ", loss_no_skipping)
+            # print("loss_no_skipping: ", loss_no_skipping)
 
-        # 可以采样多次轨迹
         list_slipping_losses = []
-        list_actions = []
-        list_rewards = []
+        list_actions_attn = []
+        list_actions_ffn = []
 
-        controller_optimizer.zero_grad()
-        for i in range(1):
-            actions, selected_log_probs, controller_entropies = controller.sample(
-                query_hidden_states
+        list_topks = [int(config.num_hidden_layers * w) for w in [0.5, 0.75]]
+        # skipping 25%的层的时候，50%的层的时候, 75%的层的时候
+        for topk in list_topks:
+            actions_attn, topk_probs_attn, actions_ffn, topk_probs_ffn = controller.predict(
+                query_hidden_states,
+                topk=topk
             )
-            layer_attn_gates = actions[0::2]
-            layer_ffn_gates = actions[1::2]
+
+            layer_attn_gates = actions_attn
+            layer_ffn_gates = actions_ffn
 
             batch_cur = {
                 "input_ids": batch["input_ids2"],
@@ -319,31 +316,27 @@ def eval_rl_model(model, controller, eval_dataloader, config):
 
             with torch.no_grad():
                 out = model(**batch_cur)
-                loss_skipping_1 = out.loss
-                list_slipping_losses.append(loss_skipping_1)
+            loss_skipping_1 = out.loss
+            list_slipping_losses.append(loss_skipping_1)
+            list_actions_attn.append(actions_attn)
+            list_actions_ffn.append(actions_ffn)
 
-            # 计算reward
-            loss_delta = - (loss_skipping_1 - loss_no_skipping)
+            if random.uniform(0, 1) < 0.01:
+                print("actions_attn: ", actions_attn)
+                print("topk_probs_attn: ", topk_probs_attn)
+                print("actions_ffn: ", actions_ffn)
+                print("topk_probs_ffn: ", topk_probs_ffn)
 
-            gpt2_calc = TransformerHparams(
-                config.hidden_size, config.num_hidden_layers,
-                s=128, v=config.vocab_size, output_frac=1.0
-            )
-            attn_flops = gpt2_calc.get_attn_flops()
-            ffn_flops = gpt2_calc.get_ffn_flops()
-            complexity_saved_attn = (config.num_hidden_layers - sum(layer_attn_gates)) * attn_flops
-            complexity_saved_ffn = (config.num_hidden_layers - sum(layer_ffn_gates)) * ffn_flops
-            complexity_saved = complexity_saved_attn + complexity_saved_ffn
-            complexity_whole = config.num_hidden_layers * (attn_flops + ffn_flops)
+        list_loss_gaps = [w - loss_no_skipping for w in list_slipping_losses]
+        avg_loss_gaps = sum(list_loss_gaps) / len(list_loss_gaps)
+        total_loss_gaps += avg_loss_gaps.detach().cpu()
 
-    try:
-        eval_loss = total_loss / num_batches
-        perplexity = math.exp(eval_loss)
-    except OverflowError:
-        perplexity = float("inf")
-        eval_loss = 1000000000
+        if random.uniform(0, 1) < 0.01:
+            print("list_loss_gaps: ", list_loss_gaps)
+            print("avg_loss_gaps: ", avg_loss_gaps)
 
-    return eval_loss
+    total_avg_loss_gaps = total_loss_gaps / num_batches
+    return total_avg_loss_gaps
 
 
 def main():
@@ -596,7 +589,6 @@ def main():
         use_auth_token=True if model_args.use_auth_token else None,
         torch_dtype=torch.bfloat16,
     )
-
     controller = Controller(
         config.n_embd, config.num_hidden_layers
     ).to("cuda").to(torch.bfloat16)
@@ -880,6 +872,7 @@ def main():
                         eval_dataloader,
                         config
                     )
+                    print("eval_loss: ", eval_loss)
 
                     if eval_loss < best_loss:
                         best_loss = eval_loss
@@ -968,6 +961,6 @@ if __name__ == "__main__":
     
     
     # gpt2-large
-    CUDA_VISIBLE_DEVICES="2" nohup python -u src/gpt2_rl/run_reinforce_IWL.py --seed 600 --dataset_name datasets/ultraChat/flat_format --model_name_or_path ./experiments/gpt2_debug_0 --block_size 1024 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 1 --per_device_eval_batch_size 4 --gradient_accumulation_steps 1 --num_train_epochs 10 --warmup_steps 1000 --output_dir experiments/iwl_gpt2_debug_0 --do_train --do_eval --eval_steps 100000 --learning_rate 2e-4 --overwrite_output_dir > iwl_gpt2_debug_0.log &
+    CUDA_VISIBLE_DEVICES="4" nohup python -u src/gpt2_rl/run_reinforce_IWL.py --seed 600 --dataset_name datasets/ultraChat/flat_format --model_name_or_path ./experiments/gpt2_debug_0 --block_size 1024 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 1 --per_device_eval_batch_size 1 --gradient_accumulation_steps 1 --num_train_epochs 10 --warmup_steps 1000 --output_dir experiments/iwl_gpt2_debug_0 --do_train --do_eval --eval_steps 1000 --learning_rate 2e-4 --overwrite_output_dir > iwl_gpt2_debug_0.log &
     
     """

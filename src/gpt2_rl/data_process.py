@@ -69,10 +69,10 @@ if __name__ == "__main__":
         list_samples_new.extend(multi_turn_to_single_turn(samp))
 
     with open(f"datasets/ultraChat/flat_format/train.json", "w", encoding="utf-8") as f:
-        for samp in list_samples_new[: - 5000]:
+        for samp in list_samples_new[: - 1000]:
             f.write(json.dumps(samp, ensure_ascii=False) + "\n")
 
     with open(f"datasets/ultraChat/flat_format/test.json", "w", encoding="utf-8") as f:
-        for samp in list_samples_new[- 5000: ]:
+        for samp in list_samples_new[- 1000: ]:
             f.write(json.dumps(samp, ensure_ascii=False) + "\n")
 

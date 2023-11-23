@@ -16,6 +16,8 @@ class Controller(torch.nn.Module):
                  num_hidden_layers,
                  dropout_ratio=0.1,):
         super(Controller, self).__init__()
+
+        self.num_hidden_layers = num_hidden_layers
         self.net = nn.Sequential(
             nn.Linear(hidden_size * 9, hidden_size * 9),
             nn.Dropout(p=dropout_ratio),
@@ -49,14 +51,40 @@ class Controller(torch.nn.Module):
         logits = self.net(hs)
         return logits
 
+    def predict(self, input_tensor, topk=12):
+        logits = self(input_tensor)
+        logits = logits.view(-1, 2)
+        probs = F.softmax(logits, dim=-1)
+        probs_1 = probs[:, 1]
+
+        probs_1_attn = probs_1[0::2]
+        probs_1_ffn = probs_1[1::2]
+
+        topk_probs_attn, topk_inds_attn = torch.topk(probs_1_attn, topk)
+        attn_selected_ = topk_inds_attn.detach().cpu().numpy().tolist()
+        actions_attn = [0] * self.num_hidden_layers
+        for idx in attn_selected_:
+            actions_attn[idx] = 1
+
+        topk_probs_ffn, topk_inds_ffn = torch.topk(probs_1_ffn, topk)
+        ffn_selected_ = topk_inds_ffn.detach().cpu().numpy().tolist()
+        actions_ffn = [0] * self.num_hidden_layers
+        for idx in ffn_selected_:
+            actions_ffn[idx] = 1
+
+        return actions_attn, topk_probs_attn, actions_ffn, topk_probs_ffn
+
     def sample(self, input_tensor):
         logits = self(input_tensor)
         logits = logits.view(-1, 2)
 
+        if random.uniform(0, 1) < 0.02:
+            print("logits: ", logits)
+
         # increase exploration
         # logits = F.tanh(logits)
-        if random.uniform(0, 1) < 0.01:
-            logits = logits + 0.01 * torch.randn(logits.shape).cuda()
+        if random.uniform(0, 1) < 0.02:
+            logits = logits + 0.001 * torch.randn(logits.shape).cuda()
 
         probs = F.softmax(logits / self.temperature, dim=-1)
         log_probs = F.log_softmax(logits / self.temperature, dim=-1)
