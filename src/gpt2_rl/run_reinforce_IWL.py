@@ -736,11 +736,15 @@ def main():
         reward_history = []
         adv_history = []
         model.eval()
+        controller_optimizer.zero_grad()
+        count = 0
         for epoch in range(starting_epoch, training_args.num_train_epochs):
 
             total_loss = 0
             active_dataloader = train_dataloader
             for step, batch in enumerate(active_dataloader):
+                count += 1
+
                 # model.train()
                 controller.train()
                 # query 先过一遍前向传播，得到hidden_states
@@ -785,85 +789,85 @@ def main():
                 list_actions = []
                 list_rewards = []
 
-                controller_optimizer.zero_grad()
-                for i in range(1):
-                    actions, selected_log_probs, controller_entropies = controller.sample(
-                        query_hidden_states
-                    )
-                    layer_attn_gates = actions[0::2]
-                    layer_ffn_gates = actions[1::2]
+                actions, selected_log_probs, controller_entropies = controller.sample(
+                    query_hidden_states
+                )
+                layer_attn_gates = actions[0::2]
+                layer_ffn_gates = actions[1::2]
 
 
-                    batch_cur = {
-                        "input_ids": batch["input_ids2"],
-                        "attention_mask": batch["attention_mask2"],
-                        "labels": batch["labels2"],
-                    }
-                    batch_cur["layer_attn_gates"] = layer_attn_gates
-                    batch_cur["layer_ffn_gates"] = layer_ffn_gates
-                    batch_cur["return_dict"] = True
+                batch_cur = {
+                    "input_ids": batch["input_ids2"],
+                    "attention_mask": batch["attention_mask2"],
+                    "labels": batch["labels2"],
+                }
+                batch_cur["layer_attn_gates"] = layer_attn_gates
+                batch_cur["layer_ffn_gates"] = layer_ffn_gates
+                batch_cur["return_dict"] = True
 
-                    with torch.no_grad():
-                        out = model(**batch_cur)
-                        loss_skipping_1 = out.loss
-                        list_slipping_losses.append(loss_skipping_1)
+                with torch.no_grad():
+                    out = model(**batch_cur)
+                    loss_skipping_1 = out.loss
+                    list_slipping_losses.append(loss_skipping_1)
 
-                    # 计算reward
-                    loss_delta = - (loss_skipping_1 - loss_no_skipping)
+                # 计算reward
+                loss_delta = - (loss_skipping_1 - loss_no_skipping)
 
-                    gpt2_calc = TransformerHparams(
-                        config.hidden_size, config.num_hidden_layers,
-                        s=128, v=config.vocab_size, output_frac=1.0
-                    )
-                    attn_flops = gpt2_calc.get_attn_flops()
-                    ffn_flops = gpt2_calc.get_ffn_flops()
-                    complexity_saved_attn = (config.num_hidden_layers - sum(layer_attn_gates)) * attn_flops
-                    complexity_saved_ffn = (config.num_hidden_layers - sum(layer_ffn_gates)) * ffn_flops
-                    complexity_saved = complexity_saved_attn + complexity_saved_ffn
-                    complexity_whole = config.num_hidden_layers * (attn_flops + ffn_flops)
-                    # print("complexity_saved: ", complexity_saved)
-                    # print("complexity_whole: ", complexity_whole)
+                gpt2_calc = TransformerHparams(
+                    config.hidden_size, config.num_hidden_layers,
+                    s=128, v=config.vocab_size, output_frac=1.0
+                )
+                attn_flops = gpt2_calc.get_attn_flops()
+                ffn_flops = gpt2_calc.get_ffn_flops()
+                complexity_saved_attn = (config.num_hidden_layers - sum(layer_attn_gates)) * attn_flops
+                complexity_saved_ffn = (config.num_hidden_layers - sum(layer_ffn_gates)) * ffn_flops
+                complexity_saved = complexity_saved_attn + complexity_saved_ffn
+                complexity_whole = config.num_hidden_layers * (attn_flops + ffn_flops)
+                # print("complexity_saved: ", complexity_saved)
+                # print("complexity_whole: ", complexity_whole)
 
-                    reward_ = loss_delta + training_args.efficiency_coef * complexity_saved / complexity_whole
+                reward_ = loss_delta + training_args.efficiency_coef * complexity_saved / complexity_whole
 
-                    reward_history.append(reward_)
+                reward_history.append(reward_)
 
-                    # moving average baseline
-                    if baseline is None:
-                        baseline = reward_
-                    else:
-                        decay = training_args.ema_baseline_decay
-                        baseline = decay * baseline + (1 - decay) * reward_
+                # moving average baseline
+                if baseline is None:
+                    baseline = reward_
+                else:
+                    decay = training_args.ema_baseline_decay
+                    baseline = decay * baseline + (1 - decay) * reward_
 
-                    adv = reward_ - baseline
-                    adv_history.append(adv)
+                adv = reward_ - baseline
+                adv_history.append(adv)
 
-                    # policy loss
-                    loss = - selected_log_probs* Variable(torch.Tensor(adv).cuda())
-                    loss = loss.mean()  # or loss.mean()
-                    loss -= training_args.entropy_coeff * controller_entropies.mean()
+                # policy loss
+                loss = - selected_log_probs* Variable(torch.Tensor(adv).cuda())
+                loss = loss.mean()  # or loss.mean()
+                loss -= training_args.entropy_coeff * controller_entropies.mean()
 
-                    if random.uniform(0, 1) < 0.05:
-                        print("actions: ", actions)
-                        print("controller_entropies: ", controller_entropies)
-                        print("controller_entropies mean: ", controller_entropies.mean())
-                        print("layer_attn_gates: ", layer_attn_gates)
-                        print("layer_ffn_gates: ", layer_ffn_gates)
-                        print("loss_delta: ", loss_delta)
-                        print("complexity_saved / complexity_whole: ", complexity_saved / complexity_whole)
-                        print("reward_: ", reward_)
-                        print("baseline: ", baseline)
-                        print("adv: ", adv)
-                        print("loss: ", loss)
+                if random.uniform(0, 1) < 0.05:
+                    print("actions: ", actions)
+                    print("controller_entropies: ", controller_entropies)
+                    print("controller_entropies mean: ", controller_entropies.mean())
+                    print("layer_attn_gates: ", layer_attn_gates)
+                    print("layer_ffn_gates: ", layer_ffn_gates)
+                    print("loss_delta: ", loss_delta)
+                    print("complexity_saved / complexity_whole: ", complexity_saved / complexity_whole)
+                    print("reward_: ", reward_)
+                    print("baseline: ", baseline)
+                    print("adv: ", adv)
+                    print("loss: ", loss)
 
-                    loss.backward()
+                loss.backward()
 
-                torch.nn.utils.clip_grad_norm(controller.parameters(), 1.0)
-                controller_optimizer.step()
-                controller_lr_scheduler.step()
+                if count % training_args.gradient_accumulation_steps == 0:
+                    torch.nn.utils.clip_grad_norm(controller.parameters(), 1.0)
+                    controller_optimizer.step()
+                    controller_lr_scheduler.step()
+                    controller_optimizer.zero_grad()
 
-                progress_bar.update(1)
-                completed_steps += 1
+                    progress_bar.update(1)
+                    completed_steps += 1
 
                 if completed_steps % training_args.eval_steps == 0 and completed_steps > 0:
                     eval_loss = eval_rl_model(
@@ -961,6 +965,6 @@ if __name__ == "__main__":
     
     
     # gpt2-large
-    CUDA_VISIBLE_DEVICES="4" nohup python -u src/gpt2_rl/run_reinforce_IWL.py --seed 600 --dataset_name datasets/ultraChat/flat_format --model_name_or_path ./experiments/gpt2_debug_0 --block_size 1024 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 1 --per_device_eval_batch_size 1 --gradient_accumulation_steps 1 --num_train_epochs 10 --warmup_steps 1000 --output_dir experiments/iwl_gpt2_debug_0 --do_train --do_eval --eval_steps 1000 --learning_rate 2e-4 --overwrite_output_dir > iwl_gpt2_debug_0.log &
+    CUDA_VISIBLE_DEVICES="4" nohup python -u src/gpt2_rl/run_reinforce_IWL.py --seed 600 --dataset_name datasets/ultraChat/flat_format --model_name_or_path ./experiments/gpt2_debug_0 --block_size 1024 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 1 --per_device_eval_batch_size 1 --gradient_accumulation_steps 8 --num_train_epochs 10 --warmup_steps 1000 --output_dir experiments/iwl_gpt2_debug_0 --do_train --do_eval --eval_steps 1000 --learning_rate 2e-4 --overwrite_output_dir > iwl_gpt2_debug_0.log &
     
     """
