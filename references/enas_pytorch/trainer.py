@@ -426,7 +426,7 @@ class Trainer(object):
             adv_history.extend(adv)
 
             # policy loss
-            loss = -log_probs*utils.get_variable(adv,
+            loss = -log_probs * utils.get_variable(adv,
                                                  self.cuda,
                                                  requires_grad=False)
             if self.args.entropy_mode == 'regularizer':

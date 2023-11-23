@@ -1154,7 +1154,7 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
             `labels = input_ids` Indices are selected in `[-100, 0, ..., config.vocab_size]` All labels set to `-100`
             are ignored (masked), the loss is only computed for labels in `[0, ..., config.vocab_size]`
         """
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        return_dict = True
 
         transformer_outputs = self.transformer(
             input_ids,
@@ -1169,7 +1169,7 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
+            return_dict=None,
             layer_attn_gates=layer_attn_gates,
             layer_ffn_gates=layer_ffn_gates,
         )
@@ -1202,7 +1202,7 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
             loss=loss,
             logits=lm_logits,
             past_key_values=transformer_outputs.past_key_values,
-            hidden_states=transformer_outputs.hidden_states,
+            hidden_states=hidden_states,
             attentions=transformer_outputs.attentions,
             cross_attentions=transformer_outputs.cross_attentions,
         )
