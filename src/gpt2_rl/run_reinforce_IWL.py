@@ -724,6 +724,14 @@ def main():
         #             "Trainable Parameters: {}".format(
         #     total_model_params, num_trained_params))
 
+        eval_loss = eval_rl_model(
+            model,
+            controller,
+            eval_dataloader,
+            config
+        )
+        print("initial eval_loss: ", eval_loss)
+
         # training loop
         best_loss = 1000000000000
         best_loss_full_model = 1000000000000
@@ -965,6 +973,6 @@ if __name__ == "__main__":
     
     
     # gpt2-large
-    CUDA_VISIBLE_DEVICES="4" nohup python -u src/gpt2_rl/run_reinforce_IWL.py --seed 600 --dataset_name datasets/ultraChat/flat_format --model_name_or_path ./experiments/gpt2_debug_0 --block_size 1024 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 1 --per_device_eval_batch_size 1 --gradient_accumulation_steps 1 --num_train_epochs 10 --warmup_steps 1000 --output_dir experiments/iwl_gpt2_debug_0 --do_train --do_eval --eval_steps 500 --learning_rate 1e-4 --overwrite_output_dir > iwl_gpt2_debug_0.log &
+    CUDA_VISIBLE_DEVICES="4" nohup python -u src/gpt2_rl/run_reinforce_IWL.py --seed 600 --dataset_name datasets/ultraChat/flat_format --model_name_or_path ./experiments/gpt2_debug_1 --block_size 1024 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 1 --per_device_eval_batch_size 1 --gradient_accumulation_steps 1 --num_train_epochs 10 --warmup_steps 1000 --output_dir experiments/iwl_gpt2_debug_0 --do_train --do_eval --eval_steps 500 --learning_rate 1e-4 --overwrite_output_dir > iwl_gpt2_debug_1.log &
     
     """
