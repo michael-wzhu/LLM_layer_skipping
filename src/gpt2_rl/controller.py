@@ -14,17 +14,17 @@ import torch.nn.functional as F
 class Controller(torch.nn.Module):
     def __init__(self, hidden_size,
                  num_hidden_layers,
-                 dropout_ratio=0.1,):
+                 dropout_ratio=0.2,):
         super(Controller, self).__init__()
 
         self.num_hidden_layers = num_hidden_layers
         self.net = nn.Sequential(
             nn.Linear(hidden_size * 9, hidden_size * 9),
             nn.Dropout(p=dropout_ratio),
-            nn.ReLU(),
+            nn.Tanh(),
             nn.Linear(hidden_size * 9, hidden_size *2),
             nn.Dropout(p=dropout_ratio),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Linear(hidden_size * 2, num_hidden_layers * 2 * 2),
             # torch.nn.Sigmoid()
         )
