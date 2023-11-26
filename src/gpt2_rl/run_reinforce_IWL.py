@@ -235,7 +235,7 @@ class MyTrainingArguments(TrainingArguments):
     learning_rate: Optional[float] = field(default=5e-5)
 
     efficiency_coef: Optional[float] = field(default=2.0)
-    entropy_coeff: Optional[float] = field(default=0.1)
+    entropy_coeff: Optional[float] = field(default=0.02)
     ema_baseline_decay: Optional[float] = field(default=0.95)
     use_return_dict: Optional[bool] = field(default=True)
 
@@ -250,7 +250,7 @@ class MyTrainingArguments(TrainingArguments):
 logger = logging.getLogger(__name__)
 
 
-def eval_rl_model(model, controller, eval_dataloader, config):
+def eval_model(model, controller, eval_dataloader, config):
     model.eval()
     controller.eval()
     losses = []
@@ -291,6 +291,86 @@ def eval_rl_model(model, controller, eval_dataloader, config):
             # print("loss_no_skipping: ", loss_no_skipping)
 
         list_slipping_losses = []
+
+        # skipping 25%的层的时候，50%的层的时候, 75%的层的时候
+        for ratio in [0.5, 0.75]:
+            if ratio == 0.5:
+                layer_attn_gates = [1, 0, 1, 0] * int(config.num_hidden_layers / 4)
+                layer_ffn_gates = [0, 1, 0, 1] * int(config.num_hidden_layers / 4)
+            elif ratio == 0.75:
+                layer_attn_gates = [1, 1, 1, 0] * int(config.num_hidden_layers / 4)
+                layer_ffn_gates = [1, 0, 1, 1] * int(config.num_hidden_layers / 4)
+            else:
+                raise ValueError
+
+            batch_cur = {
+                "input_ids": batch["input_ids2"],
+                "attention_mask": batch["attention_mask2"],
+                "labels": batch["labels2"],
+            }
+            batch_cur["layer_attn_gates"] = layer_attn_gates
+            batch_cur["layer_ffn_gates"] = layer_ffn_gates
+            batch_cur["return_dict"] = True
+
+            with torch.no_grad():
+                out = model(**batch_cur)
+            loss_skipping_1 = out.loss
+            list_slipping_losses.append(loss_skipping_1)
+
+        list_loss_gaps = [w - loss_no_skipping for w in list_slipping_losses]
+        avg_loss_gaps = sum(list_loss_gaps) / len(list_loss_gaps)
+        total_loss_gaps += avg_loss_gaps.detach().cpu()
+
+        if random.uniform(0, 1) < 0.01:
+            print("list_loss_gaps: ", list_loss_gaps)
+            print("avg_loss_gaps: ", avg_loss_gaps)
+
+    total_avg_loss_gaps = total_loss_gaps / num_batches
+    return total_avg_loss_gaps
+
+
+def eval_rl_model(model, controller, eval_dataloader, config):
+    model.eval()
+    controller.eval()
+    losses = []
+    total_loss_gaps = 0.0
+    num_batches = 0
+    for step, batch in tqdm(enumerate(eval_dataloader)):
+        model.eval()
+        num_batches += 1
+
+        # TODO: 先做batch size = 1的情况，然后再做batch的情况
+
+        # query 先过一遍前向传播，得到hidden_states
+        batch_cur = {
+            "input_ids": batch["input_ids"],
+            "attention_mask": batch["attention_mask"],
+            "labels": batch["labels"],
+        }
+        batch_cur["layer_attn_gates"] = [1] * config.num_hidden_layers
+        batch_cur["layer_ffn_gates"] = [1] * config.num_hidden_layers
+        batch_cur["return_dict"] = True
+
+        with torch.no_grad():
+            out = model(**batch_cur)
+            query_hidden_states = out.hidden_states
+            all_hidden_states = out.all_hidden_states
+
+        # 没有skipping情况下的损失计算
+        batch_cur = {
+            "input_ids": batch["input_ids2"],
+            "attention_mask": batch["attention_mask2"],
+            "labels": batch["labels2"],
+        }
+        batch_cur["layer_attn_gates"] = [1] * config.num_hidden_layers
+        batch_cur["layer_ffn_gates"] = [1] * config.num_hidden_layers
+        batch_cur["return_dict"] = True
+        with torch.no_grad():
+            out = model(**batch_cur)
+            loss_no_skipping = out.loss
+            # print("loss_no_skipping: ", loss_no_skipping)
+
+        list_slipping_losses = []
         list_actions_attn = []
         list_actions_ffn = []
 
@@ -298,7 +378,7 @@ def eval_rl_model(model, controller, eval_dataloader, config):
         # skipping 25%的层的时候，50%的层的时候, 75%的层的时候
         for topk in list_topks:
             actions_attn, topk_probs_attn, actions_ffn, topk_probs_ffn = controller.predict(
-                query_hidden_states,
+                query_hidden_states, all_hidden_states,
                 topk=topk
             )
 
@@ -724,7 +804,7 @@ def main():
         #             "Trainable Parameters: {}".format(
         #     total_model_params, num_trained_params))
 
-        eval_loss = eval_rl_model(
+        eval_loss = eval_model(
             model,
             controller,
             eval_dataloader,
@@ -768,6 +848,7 @@ def main():
                 with torch.no_grad():
                     out = model(**batch_cur)
                     query_hidden_states = out.hidden_states
+                    all_hidden_states = out.all_hidden_states
 
                 # print("query_hidden_states: ", query_hidden_states.shape)
 
@@ -798,7 +879,8 @@ def main():
                 list_rewards = []
 
                 actions, selected_log_probs, controller_entropies = controller.sample(
-                    query_hidden_states
+                    query_hidden_states, all_hidden_states,
+                    count=count
                 )
                 layer_attn_gates = actions[0::2]
                 layer_ffn_gates = actions[1::2]
@@ -842,18 +924,19 @@ def main():
                 if baseline is None:
                     baseline = reward_
                 else:
-                    decay = training_args.ema_baseline_decay
-                    baseline = decay * baseline + (1 - decay) * reward_
+                    # decay = training_args.ema_baseline_decay
+                    # baseline = decay * baseline + (1 - decay) * reward_
+                    baseline = (baseline * (count - 1) + reward_) / count
 
                 adv = reward_ - baseline
                 adv_history.append(adv)
 
                 # policy loss
-                loss = - selected_log_probs* Variable(torch.Tensor(adv).cuda())
+                loss = - selected_log_probs * Variable(torch.Tensor(adv).cuda())
                 loss = loss.mean()  # or loss.mean()
                 loss -= training_args.entropy_coeff * controller_entropies.mean()
 
-                if random.uniform(0, 1) < 0.05:
+                if random.uniform(0, 1) < 0.1:
                     print("actions: ", actions)
                     print("controller_entropies: ", controller_entropies)
                     print("controller_entropies mean: ", controller_entropies.mean())
@@ -863,13 +946,14 @@ def main():
                     print("complexity_saved / complexity_whole: ", complexity_saved / complexity_whole)
                     print("reward_: ", reward_)
                     print("baseline: ", baseline)
+                    print("count: ", count)
                     print("adv: ", adv)
                     print("loss: ", loss)
 
                 loss.backward()
 
                 if count % training_args.gradient_accumulation_steps == 0:
-                    torch.nn.utils.clip_grad_norm(controller.parameters(), 1.0)
+                    torch.nn.utils.clip_grad_norm(controller.parameters(), 0.5)
                     controller_optimizer.step()
                     controller_lr_scheduler.step()
                     controller_optimizer.zero_grad()
@@ -890,12 +974,15 @@ def main():
                             best_loss = eval_loss
                             best_steps = completed_steps
                             accelerator.wait_for_everyone()
-                            unwrapped_model = accelerator.unwrap_model(controller)
-                            unwrapped_model.save_pretrained(
+                            unwrapped_controller = accelerator.unwrap_model(controller)
+                            unwrapped_controller.save_pretrained(
                                 training_args.output_dir, is_main_process=accelerator.is_main_process,
                             )
-                            if accelerator.is_main_process:
-                                tokenizer.save_pretrained(training_args.output_dir)
+
+                        else:
+                            controller.load_pretrained(
+                                training_args.output_dir, is_main_process=accelerator.is_main_process,
+                            )
 
                             # logger.info(f"best_loss: {best_loss}; best_steps: {best_steps}")
                         logger.info(f"current best_loss: {best_loss}; best_steps: {best_steps}")
@@ -973,6 +1060,8 @@ if __name__ == "__main__":
     
     
     # gpt2-large
-    CUDA_VISIBLE_DEVICES="4" nohup python -u src/gpt2_rl/run_reinforce_IWL.py --seed 600 --dataset_name datasets/ultraChat/flat_format --model_name_or_path ./experiments/gpt2_debug_0 --block_size 1024 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 1 --per_device_eval_batch_size 1 --gradient_accumulation_steps 1 --num_train_epochs 10 --warmup_steps 1000 --output_dir experiments/iwl_gpt2_debug_1 --do_train --do_eval --eval_steps 500 --learning_rate 1e-4 --overwrite_output_dir > iwl_gpt2_debug_1.log &
+    CUDA_VISIBLE_DEVICES="3" nohup python -u src/gpt2_rl/run_reinforce_IWL.py --seed 600 --dataset_name datasets/ultraChat/flat_format --model_name_or_path ./experiments/gpt2_debug_0 --block_size 1024 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 1 --per_device_eval_batch_size 1 --gradient_accumulation_steps 4 --num_train_epochs 10 --warmup_steps 1000 --output_dir experiments/iwl_gpt2_debug_1 --do_train --do_eval --eval_steps 200 --learning_rate 2e-5 --overwrite_output_dir > iwl_gpt2_debug_1.log &
+    
+    CUDA_VISIBLE_DEVICES="2" nohup python -u src/gpt2_rl/run_reinforce_IWL.py --seed 600 --dataset_name datasets/ultraChat/flat_format --model_name_or_path ./experiments/gpt2_debug_0 --block_size 1024 --lora_rank 64 --adapter_rank 64 --per_device_train_batch_size 1 --per_device_eval_batch_size 1 --gradient_accumulation_steps 8 --num_train_epochs 10 --warmup_steps 1000 --output_dir experiments/iwl_gpt2_debug_2 --do_train --do_eval --eval_steps 200 --learning_rate 2e-5 --overwrite_output_dir > iwl_gpt2_debug_2.log &
     
     """

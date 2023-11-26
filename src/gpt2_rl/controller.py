@@ -14,45 +14,53 @@ import torch.nn.functional as F
 class Controller(torch.nn.Module):
     def __init__(self, hidden_size,
                  num_hidden_layers,
-                 dropout_ratio=0.2,):
+                 dropout_ratio=0.4,):
         super(Controller, self).__init__()
 
         self.num_hidden_layers = num_hidden_layers
         self.net = nn.Sequential(
-            nn.Linear(hidden_size * 9, hidden_size * 9),
+            nn.Linear(hidden_size * (self.num_hidden_layers + 1), hidden_size * 2),
             nn.Dropout(p=dropout_ratio),
-            nn.Tanh(),
-            nn.Linear(hidden_size * 9, hidden_size *2),
+            nn.Mish(),
+            nn.Linear(hidden_size * 2, hidden_size // 4),
             nn.Dropout(p=dropout_ratio),
             nn.GELU(),
-            nn.Linear(hidden_size * 2, num_hidden_layers * 2 * 2),
+            nn.Linear(hidden_size // 4, num_hidden_layers * 2 * 2),
             # torch.nn.Sigmoid()
         )
 
-        self.temperature = 2.0
+        self.temperature = 3.0
 
         # pooler
-        self.adap_pooler_1 = nn.AdaptiveAvgPool1d(4)
-        self.adap_pooler_2 = nn.AdaptiveMaxPool1d(4)
+        # self.adap_pooler_1 = nn.AdaptiveAvgPool1d(4)
+        # self.adap_pooler_2 = nn.AdaptiveMaxPool1d(4)
 
-    def forward(self, input_tensor,):
+    def forward(self, input_tensor, all_hidden_states,):
 
-        # 进行池化
-        input_tensor_1 = input_tensor.transpose(1, 2)  # B x D x L
-        hs_1 = (self.adap_pooler_1(input_tensor_1)).transpose(1, 2)  # B x num_prompt_tokens x D
-        hs_1 = hs_1.view(1, -1)
-        hs_2 = (self.adap_pooler_2(input_tensor_1)).transpose(1, 2)  # B x num_prompt_tokens x D
-        hs_2 = hs_2.view(1, -1)
+        # TODO: 先去掉池化操作
+        list_features = []
+        for hd_ in all_hidden_states:
+            hs_ = hd_[0, -1, :]
+            hs_ = hs_.view(1, -1)
+            list_features.append(hs_)
 
-        hs_3 = input_tensor[0, -1, :]
-        hs_3 = hs_3.view(1, -1)
+        hs = torch.cat(list_features, dim=-1)
 
-        hs = torch.cat([hs_1, hs_2, hs_3], dim=-1)
+        # input_tensor_1 = input_tensor.transpose(1, 2)  # B x D x L
+        # hs_1 = (self.adap_pooler_1(input_tensor_1)).transpose(1, 2)  # B x num_prompt_tokens x D
+        # hs_1 = hs_1.view(1, -1)
+        # hs_2 = (self.adap_pooler_2(input_tensor_1)).transpose(1, 2)  # B x num_prompt_tokens x D
+        # hs_2 = hs_2.view(1, -1)
+        #
+        # hs_3 = input_tensor[0, -1, :]
+        # hs_3 = hs_3.view(1, -1)
+        #
+        # hs = torch.cat([hs_1, hs_2, hs_3], dim=-1)
         logits = self.net(hs)
         return logits
 
-    def predict(self, input_tensor, topk=12):
-        logits = self(input_tensor)
+    def predict(self, input_tensor, all_hidden_states, topk=12):
+        logits = self(input_tensor, all_hidden_states) / self.temperature
         logits = logits.view(-1, 2)
         probs = F.softmax(logits, dim=-1)
         probs_1 = probs[:, 1]
@@ -74,17 +82,17 @@ class Controller(torch.nn.Module):
 
         return actions_attn, topk_probs_attn, actions_ffn, topk_probs_ffn
 
-    def sample(self, input_tensor):
-        logits = self(input_tensor)
+    def sample(self, input_tensor, all_hidden_states, count=0):
+        logits = self(input_tensor, all_hidden_states)
         logits = logits.view(-1, 2)
 
-        if random.uniform(0, 1) < 0.02:
+        if random.uniform(0, 1) < 0.01:
             print("logits: ", logits)
 
         # increase exploration
         # logits = F.tanh(logits)
-        if random.uniform(0, 1) < 0.02:
-            logits = logits + 0.001 * torch.randn(logits.shape).cuda()
+        # if random.uniform(0, 1) < 0.02:
+        #     logits = logits + 0.001 * torch.randn(logits.shape).cuda()
 
         probs = F.softmax(logits / self.temperature, dim=-1)
         log_probs = F.log_softmax(logits / self.temperature, dim=-1)
@@ -95,6 +103,11 @@ class Controller(torch.nn.Module):
         # print("logits: ", logits.shape)
         # print("probs: ", probs.shape)
         # print("entropies: ", entropies)
+
+        if count < 5000:
+            if random.uniform(0, 1) < 0.5:
+                actions = [[1], [1], [0], [0], [1], [1], [0], [0]] * int(self.num_hidden_layers / 4)
+                actions = torch.tensor(actions)
 
         selected_log_probs = log_probs.gather(
             1,
@@ -129,6 +142,17 @@ class Controller(torch.nn.Module):
         if is_main_process:
             torch.save(self.state_dict(), os.path.join(save_directory, 'controller_model.bin'))
 
+    def load_pretrained(
+            self,
+            save_directory,
+            is_main_process: bool = True,
+            **kwargs,
+    ):
+        if is_main_process:
+
+            return self.load_state_dict(
+                torch.load(os.path.join(save_directory, 'controller_model.bin'))
+            )
 
 # if __name__ == "__main__":
 
