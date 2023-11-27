@@ -18,45 +18,59 @@ class Controller(torch.nn.Module):
         super(Controller, self).__init__()
 
         self.num_hidden_layers = num_hidden_layers
-        self.net = nn.Sequential(
-            nn.Linear(hidden_size * (self.num_hidden_layers + 1), hidden_size * 2),
+
+        self.linear_1 = nn.Sequential(
+            nn.Linear(num_hidden_layers * hidden_size, hidden_size),
+            nn.LayerNorm(hidden_size)
+        )
+
+        # self.net_2 = nn.Sequential(
+        #     nn.Linear(hidden_size * 4, hidden_size // 2),
+        #     nn.Dropout(p=dropout_ratio),
+        #     nn.Tanh(),
+        #     nn.Linear(hidden_size // 2, hidden_size // 8),
+        #     nn.Dropout(p=dropout_ratio),
+        #     nn.SiLU(),
+        #     nn.Linear(hidden_size // 8, num_hidden_layers * 2 * 2),
+        #     # torch.nn.Sigmoid()
+        # )
+        self.net_2 = nn.Sequential(
+            nn.Linear(hidden_size * 4, hidden_size // 8),
             nn.Dropout(p=dropout_ratio),
-            nn.Mish(),
-            nn.Linear(hidden_size * 2, hidden_size // 4),
-            nn.Dropout(p=dropout_ratio),
-            nn.GELU(),
-            nn.Linear(hidden_size // 4, num_hidden_layers * 2 * 2),
+            nn.Tanh(),
+            nn.Linear(hidden_size // 8, num_hidden_layers * 2 * 2),
             # torch.nn.Sigmoid()
         )
 
         self.temperature = 3.0
 
         # pooler
-        # self.adap_pooler_1 = nn.AdaptiveAvgPool1d(4)
-        # self.adap_pooler_2 = nn.AdaptiveMaxPool1d(4)
+        self.adap_pooler_1 = nn.AdaptiveAvgPool1d(1)
+        self.adap_pooler_2 = nn.AdaptiveMaxPool1d(1)
 
     def forward(self, input_tensor, all_hidden_states,):
 
         # TODO: 先去掉池化操作
-        list_features = []
-        for hd_ in all_hidden_states:
+        list_features_prev = []
+        for hd_ in all_hidden_states[: -1]:
             hs_ = hd_[0, -1, :]
             hs_ = hs_.view(1, -1)
-            list_features.append(hs_)
+            list_features_prev.append(hs_)
 
-        hs = torch.cat(list_features, dim=-1)
+        hs_prev = torch.cat(list_features_prev, dim=-1)
+        hs_prev = self.linear_1(hs_prev)
 
-        # input_tensor_1 = input_tensor.transpose(1, 2)  # B x D x L
-        # hs_1 = (self.adap_pooler_1(input_tensor_1)).transpose(1, 2)  # B x num_prompt_tokens x D
-        # hs_1 = hs_1.view(1, -1)
-        # hs_2 = (self.adap_pooler_2(input_tensor_1)).transpose(1, 2)  # B x num_prompt_tokens x D
-        # hs_2 = hs_2.view(1, -1)
-        #
-        # hs_3 = input_tensor[0, -1, :]
-        # hs_3 = hs_3.view(1, -1)
-        #
-        # hs = torch.cat([hs_1, hs_2, hs_3], dim=-1)
-        logits = self.net(hs)
+        input_tensor_1 = input_tensor.transpose(1, 2)  # B x D x L
+        hs_1 = (self.adap_pooler_1(input_tensor_1)).transpose(1, 2)  # B x num_prompt_tokens x D
+        hs_1 = hs_1.view(1, -1)
+        hs_2 = (self.adap_pooler_2(input_tensor_1)).transpose(1, 2)  # B x num_prompt_tokens x D
+        hs_2 = hs_2.view(1, -1)
+
+        hs_3 = input_tensor[0, -1, :]
+        hs_3 = hs_3.view(1, -1)
+
+        hs = torch.cat([hs_1, hs_2, hs_3, hs_prev], dim=-1)
+        logits = self.net_2(hs)
         return logits
 
     def predict(self, input_tensor, all_hidden_states, topk=12):
