@@ -37,7 +37,7 @@ class Controller(torch.nn.Module):
         self.net_2 = nn.Sequential(
             nn.Linear(hidden_size * 4, hidden_size // 8),
             nn.Dropout(p=dropout_ratio),
-            nn.Tanh(),
+            nn.GELU(),
             nn.Linear(hidden_size // 8, num_hidden_layers * 2 * 2),
             # torch.nn.Sigmoid()
         )
@@ -119,9 +119,11 @@ class Controller(torch.nn.Module):
         # print("entropies: ", entropies)
 
         if count < 5000:
-            if random.uniform(0, 1) < 0.5:
-                actions = [[1], [1], [0], [0], [1], [1], [0], [0]] * int(self.num_hidden_layers / 4)
+            if random.uniform(0, 1) < 0.6:
+                actions = [[1], [0], [0], [1], [0], [0], [0], [0]] * int(self.num_hidden_layers / 4)
+
                 actions = torch.tensor(actions)
+
 
         selected_log_probs = log_probs.gather(
             1,
