@@ -24,29 +24,29 @@ class Controller(torch.nn.Module):
             nn.LayerNorm(hidden_size)
         )
 
-        # self.net_2 = nn.Sequential(
-        #     nn.Linear(hidden_size * 4, hidden_size // 2),
-        #     nn.Dropout(p=dropout_ratio),
-        #     nn.Tanh(),
-        #     nn.Linear(hidden_size // 2, hidden_size // 8),
-        #     nn.Dropout(p=dropout_ratio),
-        #     nn.SiLU(),
-        #     nn.Linear(hidden_size // 8, num_hidden_layers * 2 * 2),
-        #     # torch.nn.Sigmoid()
-        # )
         self.net_2 = nn.Sequential(
-            nn.Linear(hidden_size * 4, hidden_size // 8),
+            nn.Linear(hidden_size * 6, hidden_size // 2),
+            nn.Dropout(p=dropout_ratio),
+            nn.Mish(),
+            nn.Linear(hidden_size // 2, hidden_size // 8),
             nn.Dropout(p=dropout_ratio),
             nn.GELU(),
             nn.Linear(hidden_size // 8, num_hidden_layers * 2 * 2),
             # torch.nn.Sigmoid()
         )
+        # self.net_2 = nn.Sequential(
+        #     nn.Linear(hidden_size * 4, hidden_size // 8),
+        #     nn.Dropout(p=dropout_ratio),
+        #     nn.GELU(),
+        #     nn.Linear(hidden_size // 8, num_hidden_layers * 2 * 2),
+        #     # torch.nn.Sigmoid()
+        # )
 
         self.temperature = 3.0
 
         # pooler
-        self.adap_pooler_1 = nn.AdaptiveAvgPool1d(1)
-        self.adap_pooler_2 = nn.AdaptiveMaxPool1d(1)
+        self.adap_pooler_1 = nn.AdaptiveAvgPool1d(2)
+        self.adap_pooler_2 = nn.AdaptiveMaxPool1d(2)
 
     def forward(self, input_tensor, all_hidden_states,):
 
@@ -119,11 +119,12 @@ class Controller(torch.nn.Module):
         # print("entropies: ", entropies)
 
         if count < 5000:
-            if random.uniform(0, 1) < 0.6:
-                actions = [[1], [0], [0], [1], [0], [0], [0], [0]] * int(self.num_hidden_layers / 4)
-
+            if random.uniform(0, 1) < 0.3:
+                actions = [[1], [0], [0], [0], [0], [1], [0], [0]] * int(self.num_hidden_layers / 4)
                 actions = torch.tensor(actions)
-
+            elif 0.3 <= random.uniform(0, 1) < 0.6:
+                actions = [[1], [0], [0], [1], [1], [0], [0], [1]] * int(self.num_hidden_layers / 4)
+                actions = torch.tensor(actions)
 
         selected_log_probs = log_probs.gather(
             1,
